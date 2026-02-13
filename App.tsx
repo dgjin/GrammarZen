@@ -5,7 +5,8 @@ import { checkChineseText, Part, CheckMode } from './services/geminiService';
 import { ProofreadResult, LoadingState, RuleLibrary } from './types';
 import { ResultView } from './components/ResultView';
 import { RuleManagerModal } from './components/RuleManagerModal';
-import { Wand2, Eraser, AlertCircle, BookOpenCheck, Upload, FileText, X, FileImage, FileType, Sparkles, Zap, ShieldCheck, Trash2, Book, ShieldAlert, Plus, Ban, Library, Download, Cpu, ChevronDown } from 'lucide-react';
+import { SensitiveWordsModal } from './components/SensitiveWordsModal';
+import { Wand2, Eraser, AlertCircle, BookOpenCheck, Upload, FileText, X, FileImage, FileType, Sparkles, Zap, ShieldCheck, Trash2, Book, ShieldAlert, Cpu, ChevronDown, FileBadge } from 'lucide-react';
 
 // Configure PDF.js worker
 GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs`;
@@ -15,12 +16,6 @@ const WHITELIST_KEY = 'grammarzen_whitelist';
 const SENSITIVE_WORDS_KEY = 'grammarzen_sensitive_words';
 const RULE_LIBS_KEY = 'grammarzen_rule_libs';
 
-// Built-in vocabularies available in public/Vocabulary
-const BUILT_IN_VOCABULARIES = [
-  { name: '广告法违规词库', path: '/Vocabulary/ad-laws.txt', description: '包含“第一”、“顶级”等极限词' },
-  { name: '通用违禁词库', path: '/Vocabulary/general-sensitive.txt', description: '包含涉政、暴力等常规敏感词' }
-];
-
 interface Attachment {
   name: string;
   mimeType: string;
@@ -28,7 +23,7 @@ interface Attachment {
   size: number;
 }
 
-function App() {
+export default function App() {
   const [inputText, setInputText] = useState('');
   const [attachment, setAttachment] = useState<Attachment | null>(null);
   const [result, setResult] = useState<ProofreadResult | null>(null);
@@ -48,8 +43,6 @@ function App() {
   // Sensitive Words State
   const [sensitiveWords, setSensitiveWords] = useState<string[]>([]);
   const [showSensitiveModal, setShowSensitiveModal] = useState(false);
-  const [newSensitiveWord, setNewSensitiveWord] = useState('');
-  const sensitiveFileInputRef = useRef<HTMLInputElement>(null);
 
   // Rule Library State
   const [ruleLibraries, setRuleLibraries] = useState<RuleLibrary[]>([]);
@@ -115,13 +108,11 @@ function App() {
   }
 
   // --- Sensitive Words Logic ---
-  const handleAddSensitiveWord = () => {
-    const word = newSensitiveWord.trim();
+  const handleAddSensitiveWord = (word: string) => {
     if (word && !sensitiveWords.includes(word)) {
       const newList = [...sensitiveWords, word];
       setSensitiveWords(newList);
       localStorage.setItem(SENSITIVE_WORDS_KEY, JSON.stringify(newList));
-      setNewSensitiveWord('');
     }
   };
 
@@ -132,48 +123,12 @@ function App() {
   };
 
   const clearSensitiveWords = () => {
-    if(window.confirm("确定要清空所有敏感词吗？")) {
-      setSensitiveWords([]);
-      localStorage.removeItem(SENSITIVE_WORDS_KEY);
-    }
+    // Confirmation handled in SensitiveWordsModal component
+    setSensitiveWords([]);
+    localStorage.removeItem(SENSITIVE_WORDS_KEY);
   };
 
-  const handleImportSensitiveWords = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const text = e.target?.result as string;
-      if (!text) return;
-      processSensitiveImport(text);
-    };
-    reader.readAsText(file);
-    if (sensitiveFileInputRef.current) sensitiveFileInputRef.current.value = '';
-  };
-
-  const processSensitiveImport = (text: string) => {
-    let newWords: string[] = [];
-    try {
-      // Try parsing as JSON first
-      const json = JSON.parse(text);
-      if (Array.isArray(json)) {
-        newWords = json.filter(item => typeof item === 'string').map(s => s.trim());
-      } else {
-           throw new Error("Not an array");
-      }
-    } catch (e) {
-      // Fallback to TXT/CSV parsing
-      newWords = text.split(/[\n,\r;|]+/)
-        .map(w => w.trim())
-        .filter(w => w.length > 0);
-    }
-
-    if (newWords.length === 0) {
-      alert("未在文件中找到有效的词汇。");
-      return;
-    }
-
+  const handleBatchAddSensitiveWords = (newWords: string[]) => {
     const uniqueNewWords = newWords.filter(word => !sensitiveWords.includes(word));
     const dedupedNewWords = [...new Set(uniqueNewWords)];
     
@@ -186,18 +141,6 @@ function App() {
     setSensitiveWords(updatedList);
     localStorage.setItem(SENSITIVE_WORDS_KEY, JSON.stringify(updatedList));
     alert(`成功导入 ${dedupedNewWords.length} 个新敏感词。`);
-  };
-
-  const handleLoadSystemVocabulary = async (vocabPath: string) => {
-    try {
-      const response = await fetch(vocabPath);
-      if (!response.ok) throw new Error("Load failed");
-      const text = await response.text();
-      processSensitiveImport(text);
-    } catch (e) {
-      console.error(e);
-      alert("无法加载系统内置词库，请检查网络或 Vocabulary 目录配置。");
-    }
   };
 
   // --- Rule Library Logic ---
@@ -459,10 +402,12 @@ function App() {
     if (loadingState === 'loading') {
        if (mode === 'professional') return '深度扫描中...';
        if (mode === 'sensitive') return '合规扫描中...';
+       if (mode === 'official') return '公文审校中...';
        return '正在智能校对...';
     }
     if (mode === 'professional') return '开始专业深度校对';
     if (mode === 'sensitive') return '开始合规专项检查';
+    if (mode === 'official') return '开始公文规范审校';
     return '开始校对';
   };
 
@@ -470,6 +415,7 @@ function App() {
       if ((!inputText.trim() && !attachment) || isBusy) return 'bg-slate-300 cursor-not-allowed shadow-none';
       if (mode === 'professional') return 'bg-gradient-to-r from-purple-600 to-purple-500 hover:from-purple-500 hover:to-purple-400';
       if (mode === 'sensitive') return 'bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400';
+      if (mode === 'official') return 'bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400';
       return 'bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400';
   };
 
@@ -652,7 +598,7 @@ function App() {
 
                <div className="flex items-center gap-4">
                   {/* Mode Toggle */}
-                  <div className="flex items-center bg-white border border-slate-200 rounded-lg p-0.5">
+                  <div className="flex items-center flex-wrap bg-white border border-slate-200 rounded-lg p-0.5">
                     <button
                       onClick={() => setMode('fast')}
                       disabled={isBusy}
@@ -668,6 +614,14 @@ function App() {
                     >
                       <Sparkles className="w-3 h-3" />
                       专业深度
+                    </button>
+                    <button
+                      onClick={() => setMode('official')}
+                      disabled={isBusy}
+                      className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'official' ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                    >
+                      <FileBadge className="w-3 h-3" />
+                      公文规范
                     </button>
                     <button
                       onClick={() => setMode('sensitive')}
@@ -730,7 +684,7 @@ function App() {
                 </>
               ) : (
                 <>
-                  {mode === 'sensitive' ? <ShieldAlert className="w-5 h-5"/> : <Wand2 className="w-5 h-5" />}
+                  {mode === 'sensitive' ? <ShieldAlert className="w-5 h-5"/> : (mode === 'official' ? <FileBadge className="w-5 h-5"/> : <Wand2 className="w-5 h-5" />)}
                   <span>{getButtonText()}</span>
                 </>
               )}
@@ -841,137 +795,15 @@ function App() {
       )}
 
       {/* Sensitive Words Modal */}
-      {showSensitiveModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 animate-fade-in backdrop-blur-sm">
-          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full m-4 overflow-hidden animate-fade-in-up border border-slate-200 flex flex-col max-h-[85vh]">
-            <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-              <h3 className="font-semibold text-lg text-slate-800 flex items-center gap-2">
-                <ShieldAlert className="w-5 h-5 text-rose-600" />
-                本地敏感词库
-              </h3>
-              <button 
-                onClick={() => setShowSensitiveModal(false)} 
-                className="text-slate-400 hover:text-slate-600 hover:bg-slate-100 p-1 rounded-full transition-all"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            
-            <div className="p-6 overflow-y-auto">
-              {/* Built-in Vocab Section */}
-              <div className="mb-6 p-4 bg-brand-50/50 rounded-lg border border-brand-100">
-                  <h4 className="text-sm font-semibold text-brand-800 mb-2 flex items-center gap-1">
-                      <Library className="w-4 h-4" />
-                      系统内置词库
-                  </h4>
-                  <p className="text-xs text-brand-600/80 mb-3">加载系统预设的 Vocabulary 文件夹词库。</p>
-                  <div className="space-y-2">
-                      {BUILT_IN_VOCABULARIES.map((vocab, index) => (
-                          <div key={index} className="flex items-center justify-between bg-white p-2.5 rounded border border-brand-100">
-                              <div>
-                                  <span className="text-sm font-medium text-slate-700">{vocab.name}</span>
-                                  <p className="text-xs text-slate-400 mt-0.5">{vocab.description}</p>
-                              </div>
-                              <button
-                                onClick={() => handleLoadSystemVocabulary(vocab.path)}
-                                className="text-xs flex items-center gap-1 bg-brand-50 hover:bg-brand-100 text-brand-700 px-2 py-1.5 rounded transition-colors"
-                              >
-                                  <Download className="w-3.5 h-3.5" />
-                                  加载
-                              </button>
-                          </div>
-                      ))}
-                  </div>
-              </div>
-
-              <div className="mb-4">
-                  <div className="flex justify-between items-center mb-2">
-                    <p className="text-sm text-slate-600 font-medium">当前敏感词列表：</p>
-                    <button 
-                        onClick={() => sensitiveFileInputRef.current?.click()}
-                        className="text-xs text-slate-500 hover:text-brand-600 flex items-center gap-1 px-2 py-1 rounded hover:bg-slate-100 transition-colors"
-                    >
-                        <Upload className="w-3 h-3" /> 
-                        自定义文件导入
-                    </button>
-                    <input 
-                        type="file" 
-                        ref={sensitiveFileInputRef}
-                        className="hidden"
-                        accept=".txt,.csv,.json"
-                        onChange={handleImportSensitiveWords}
-                    />
-                  </div>
-                  <div className="flex gap-2">
-                      <input 
-                          type="text" 
-                          value={newSensitiveWord}
-                          onChange={(e) => setNewSensitiveWord(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && handleAddSensitiveWord()}
-                          placeholder="输入敏感词..."
-                          className="flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-rose-500 focus:border-transparent"
-                      />
-                      <button 
-                          onClick={handleAddSensitiveWord}
-                          disabled={!newSensitiveWord.trim()}
-                          className="px-3 py-2 bg-rose-600 text-white rounded-lg hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                      >
-                          <Plus className="w-5 h-5" />
-                      </button>
-                  </div>
-              </div>
-
-              {sensitiveWords.length === 0 ? (
-                <div className="text-center text-slate-500 py-6 flex flex-col items-center border border-dashed border-slate-200 rounded-lg bg-slate-50/50">
-                  <Ban className="w-10 h-10 mb-2 text-slate-300" />
-                  <p className="text-sm">暂无本地敏感词</p>
-                  <p className="text-xs text-slate-400 mt-1">请上方加载内置词库，或手动添加</p>
-                </div>
-              ) : (
-                <div className="flex flex-wrap gap-2 max-h-[30vh] overflow-y-auto content-start p-1">
-                    {sensitiveWords.map((word, index) => (
-                        <div key={index} className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 text-rose-800 rounded-lg text-sm border border-rose-100 group hover:border-rose-300 transition-all duration-200">
-                        <span className="font-medium">{word}</span>
-                        <button 
-                            onClick={() => handleRemoveSensitiveWord(word)}
-                            className="text-rose-300 group-hover:text-rose-600 transition-colors ml-1 p-0.5 rounded-full hover:bg-rose-100"
-                            title="移除"
-                        >
-                            <X className="w-3 h-3" />
-                        </button>
-                        </div>
-                    ))}
-                </div>
-              )}
-            </div>
-
-            <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex justify-between items-center">
-              <div>
-                  {sensitiveWords.length > 0 && (
-                     <span className="text-xs text-slate-400">共 {sensitiveWords.length} 个词汇</span>
-                  )}
-              </div>
-              <div className="flex gap-3">
-                {sensitiveWords.length > 0 && (
-                    <button 
-                        onClick={clearSensitiveWords} 
-                        className="flex items-center gap-1.5 px-4 py-2 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg text-sm font-medium transition-colors border border-transparent hover:border-red-100"
-                    >
-                        <Trash2 className="w-4 h-4" />
-                        清空
-                    </button>
-                )}
-                <button 
-                    onClick={() => setShowSensitiveModal(false)}
-                    className="px-5 py-2 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 text-slate-700 rounded-lg text-sm font-medium transition-all shadow-sm"
-                >
-                    完成
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <SensitiveWordsModal 
+        isOpen={showSensitiveModal}
+        onClose={() => setShowSensitiveModal(false)}
+        words={sensitiveWords}
+        onAdd={handleAddSensitiveWord}
+        onRemove={handleRemoveSensitiveWord}
+        onClear={clearSensitiveWords}
+        onBatchAdd={handleBatchAddSensitiveWords}
+      />
 
       {/* Rule Manager Modal */}
       <RuleManagerModal 
@@ -984,5 +816,3 @@ function App() {
     </div>
   );
 }
-
-export default App;

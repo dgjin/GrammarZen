@@ -16,7 +16,7 @@ export interface Part {
   };
 }
 
-export type CheckMode = 'fast' | 'professional' | 'sensitive';
+export type CheckMode = 'fast' | 'professional' | 'sensitive' | 'official';
 
 /**
  * Extracts specific validation rules. Defaults to Gemini for this helper task.
@@ -260,6 +260,22 @@ export const checkChineseText = async (
       如果发现自定义规则库中的内容，请视为合规性要求进行检查：
       ${customRulesInstruction}
       请只返回 'sensitive' 类型的 Issue。除非原文全是乱码无法阅读，否则 'score' 评分应主要反映合规程度（100表示完全合规，分值越低违规越严重）。
+    `;
+  } else if (mode === 'official') {
+    systemInstruction = `
+      你是一名资深的党政机关公文写作与审核专家。你的任务是对用户提供的公文内容进行严格的政治把关和规范性校对。
+      ${whitelistInstruction}
+      ${sensitiveWordsInstruction}
+      ${customRulesInstruction}
+      
+      请重点进行以下检查：
+      1. **政治规范**：检查领导人姓名、职务、排序是否正确；专有名词（如“四个意识”、“五位一体”）表述是否准确。
+      2. **公文格式与用语**：检查是否符合《党政机关公文处理工作条例》要求；用语是否庄重、严谨、得体；禁止使用口语、网络用语。
+      3. **逻辑与结构**：检查层次是否清晰，逻辑是否严密，搭配是否得当。
+      4. **基础校对**：检查错别字、标点符号（重点关注书名号、引号、序号的规范使用）。
+      
+      如果不符合公文规范的表达，请标记为 'style' (规范/格式) 或 'sensitive' (政治/合规) 类型。
+      Score 评分应反映公文的规范化程度。
     `;
   } else if (mode === 'professional') {
     systemInstruction = `

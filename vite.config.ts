@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
+import path from 'path';
 
 export default defineConfig(({ mode }) => {
   // 加载环境变量 (.env 文件)
@@ -7,6 +8,11 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    resolve: {
+      alias: {
+        "@": path.resolve(__dirname, "./"),
+      },
+    },
     // 优化 pdfjs-dist 的构建支持
     optimizeDeps: {
       esbuildOptions: {
