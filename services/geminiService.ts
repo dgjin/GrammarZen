@@ -16,7 +16,7 @@ export interface Part {
   };
 }
 
-export type CheckMode = 'fast' | 'professional' | 'sensitive' | 'official';
+export type CheckMode = 'fast' | 'professional' | 'sensitive' | 'official' | 'polishing';
 
 /**
  * Extracts specific validation rules. Defaults to Gemini for this helper task.
@@ -67,7 +67,9 @@ export const extractRulesFromText = async (content: string): Promise<{ name: str
     const jsonText = response.text;
     if (!jsonText) throw new Error("Empty response from Gemini");
     
-    return JSON.parse(jsonText);
+    // Clean markdown if present (fixes potential JSON parse errors)
+    const cleanJson = jsonText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+    return JSON.parse(cleanJson);
   } catch (error) {
     console.error("Rule Extraction Error:", error);
     throw error;
@@ -84,14 +86,24 @@ const parsePartialJson = (json: string): Partial<ProofreadResult> => {
   let cleanJson = json.replace(/^```json\s*/, '').replace(/\s*```$/, '');
 
   // 1. Extract correctedText
+  // Matches "correctedText": "..." taking into account escaped quotes
   const textMatch = cleanJson.match(/"correctedText"\s*:\s*"(.*?)(?:(?<!\\)"|$)/s);
   if (textMatch) {
     let rawText = textMatch[1];
     try {
+      // If the string was truncated (no closing quote), we shouldn't add one blindly for JSON.parse
+      // But for display, we want the raw text.
+      // If it ends with backslash, remove it to avoid JSON parse error if we were to reconstruct
       if (rawText.endsWith('\\') && !rawText.endsWith('\\\\')) {
         rawText = rawText.slice(0, -1);
       }
-      result.correctedText = JSON.parse(`"${rawText}"`);
+      // Decode unicode escapes manually or simple replacement if JSON.parse fails?
+      // Simple approach: unescape \" and \\
+      result.correctedText = rawText
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, '\\')
+        .replace(/\\n/g, '\n')
+        .replace(/\\t/g, '\t');
     } catch (e) {
       result.correctedText = rawText;
     }
@@ -102,6 +114,8 @@ const parsePartialJson = (json: string): Partial<ProofreadResult> => {
   if (issuesMatch) {
     const content = issuesMatch[1];
     const issues: Issue[] = [];
+    // Simple heuristic to match {...} objects. 
+    // WARNING: Fails if objects contain nested braces. Issue objects are flat, so usually fine.
     const objectRegex = /{[^{}]+}/g;
     const foundObjects = content.match(objectRegex);
     
@@ -119,6 +133,13 @@ const parsePartialJson = (json: string): Partial<ProofreadResult> => {
     }
     result.issues = issues;
   }
+
+  // 3. Extract Summary & Score (Best effort)
+  const summaryMatch = cleanJson.match(/"summary"\s*:\s*"(.*?)(?:(?<!\\)"|$)/s);
+  if (summaryMatch) result.summary = summaryMatch[1];
+
+  const scoreMatch = cleanJson.match(/"score"\s*:\s*(\d+)/);
+  if (scoreMatch) result.score = parseInt(scoreMatch[1], 10);
 
   return result;
 };
@@ -214,11 +235,22 @@ async function callOpenAICompatibleStream(
     }
   }
 
+  // Attempt robust parsing
   try {
     const cleanJson = fullText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
     return JSON.parse(cleanJson) as ProofreadResult;
   } catch (e) {
-    console.error("Final JSON Parse Error", fullText);
+    console.warn("Final JSON Parse Error (Recovering):", e);
+    // Fallback: Recover from partial JSON
+    const partial = parsePartialJson(fullText);
+    if (partial.correctedText) {
+       return {
+         correctedText: partial.correctedText,
+         issues: partial.issues || [],
+         summary: partial.summary || "分析完成（部分数据可能丢失）",
+         score: partial.score || 80
+       } as ProofreadResult;
+    }
     throw new Error("模型返回的不是有效的 JSON 格式");
   }
 }
@@ -276,6 +308,23 @@ export const checkChineseText = async (
       
       如果不符合公文规范的表达，请标记为 'style' (规范/格式) 或 'sensitive' (政治/合规) 类型。
       Score 评分应反映公文的规范化程度。
+    `;
+  } else if (mode === 'polishing') {
+    systemInstruction = `
+      你是一名文学功底深厚的资深编辑和改写专家。你的任务是对用户提供的文本进行**润色和改写**，使其更加通顺、优雅、专业。
+      
+      目标：
+      1. **提升文采**：使用更精准、生动或正式的词汇替换口语化表达。
+      2. **优化语流**：调整句式结构，使长短句搭配得当，阅读节奏更流畅。
+      3. **保持原意**：可以大幅调整结构和用词，但**绝对不能**改变原文的核心信息和事实。
+      
+      ${whitelistInstruction}
+      ${sensitiveWordsInstruction}
+      ${customRulesInstruction}
+      
+      请将你的所有修改（包括词汇替换、句式重组）记录为 'suggestion' (建议) 或 'style' (风格) 类型的 Issue。
+      correctedText 应该是你润色后的完整最终版本。
+      Score 评分应反映原文的文笔优美程度。
     `;
   } else if (mode === 'professional') {
     systemInstruction = `
@@ -374,8 +423,31 @@ export const checkChineseText = async (
           }
         }
       }
-      const cleanJson = fullText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
-      return JSON.parse(cleanJson) as ProofreadResult;
+      
+      let cleanJson = fullText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+      // Try to clean potential garbage before/after the JSON object
+      const firstBrace = cleanJson.indexOf('{');
+      const lastBrace = cleanJson.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          cleanJson = cleanJson.substring(firstBrace, lastBrace + 1);
+      }
+
+      try {
+        return JSON.parse(cleanJson) as ProofreadResult;
+      } catch (e) {
+        console.warn("JSON Parse failed, attempting recovery:", e);
+        // Fallback: Use manual parser
+        const partial = parsePartialJson(fullText);
+        if (partial.correctedText) {
+             return {
+                 correctedText: partial.correctedText,
+                 issues: partial.issues || [],
+                 summary: partial.summary || "生成中断，仅显示部分结果",
+                 score: partial.score || 0
+             } as ProofreadResult;
+        }
+        throw e; // Rethrow if not recoverable
+      }
     } catch (error) {
       console.error("Gemini API Error:", error);
       throw error;
@@ -399,12 +471,21 @@ export const checkChineseText = async (
   // --- iFlytek Spark (OpenAI Compatible) ---
   else if (modelName.startsWith('spark')) {
     if (!sparkApiKey) throw new Error("未配置星火大模型 API Key。请在 .env 中设置 SPARK_API_KEY。");
-    // Spark OpenAI-Compatible Endpoint
-    // Note: 'spark-ultra' maps to '4.0Ultra' usually, but user selects '4.0Ultra' in dropdown
+    
+    // Map frontend model names to Spark API model versions
+    // Reference: iFlytek Open Platform - OpenAI Compatible Interface
+    let sparkModelVersion = 'generalv3.5'; // Default to Spark Max
+    switch (modelName) {
+        case 'spark-ultra': sparkModelVersion = '4.0Ultra'; break;
+        case 'spark-max': sparkModelVersion = 'generalv3.5'; break;
+        case 'spark-pro': sparkModelVersion = 'generalv3'; break;
+        case 'spark-lite': sparkModelVersion = 'general'; break;
+    }
+
     return callOpenAICompatibleStream(
       'https://spark-api-open.xf-yun.com/v1/chat/completions',
       sparkApiKey,
-      modelName === 'spark-ultra' ? '4.0Ultra' : 'generalv3.5', // Simple mapping if needed, or pass direct
+      sparkModelVersion,
       systemInstruction,
       content,
       onUpdate

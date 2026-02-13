@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { ProofreadResult, IssueType, Issue } from '../types';
 import { IssueCard } from './IssueCard';
-import { Copy, Check, ThumbsUp, AlertTriangle, FileDiff, Eye, Download, ChevronDown, CheckCheck, ListX } from 'lucide-react';
+import { Copy, Check, ThumbsUp, AlertTriangle, FileDiff, Eye, Download, ChevronDown, CheckCheck, ListX, FileText } from 'lucide-react';
 import { diffChars, Change } from 'diff';
 
 interface ResultViewProps {
@@ -136,6 +136,33 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
 
   const handleExportText = () => {
     downloadFile(currentText, `corrected-${Date.now()}.txt`, 'text/plain;charset=utf-8');
+  };
+
+  const handleExportWord = () => {
+    // Generate an HTML-compatible Word document
+    const header = `
+      <html xmlns:o='urn:schemas-microsoft-com:office:office' 
+            xmlns:w='urn:schemas-microsoft-com:office:word' 
+            xmlns='http://www.w3.org/TR/REC-html40'>
+      <head>
+        <meta charset='utf-8'>
+        <style>
+          body { font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif; }
+          p { margin-bottom: 1em; line-height: 1.6; }
+        </style>
+      </head>
+      <body>`;
+    const footer = "</body></html>";
+    
+    // Convert newlines to paragraphs for better formatting in Word
+    const contentHtml = currentText.split('\n').map(line => {
+        if (!line.trim()) return ''; // Skip empty lines or use <br/> if stricter preservation needed
+        return `<p>${line}</p>`;
+    }).join('');
+    
+    const sourceHTML = header + contentHtml + footer;
+    
+    downloadFile(sourceHTML, `grammarzen-export-${Date.now()}.doc`, 'application/msword');
   };
 
   const handleExportReport = () => {
@@ -437,17 +464,26 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
                 </button>
                 
                 {showExportMenu && (
-                    <div className="absolute top-full right-0 mt-1 w-40 bg-white border border-slate-200 rounded-lg shadow-xl z-20 py-1 animate-in fade-in zoom-in-95 duration-100">
+                    <div className="absolute top-full right-0 mt-1 w-44 bg-white border border-slate-200 rounded-lg shadow-xl z-20 py-1 animate-in fade-in zoom-in-95 duration-100">
                         <button 
                             onClick={handleExportText}
-                            className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 hover:text-brand-600"
+                            className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 hover:text-brand-600 flex items-center gap-2"
                         >
+                            <FileText className="w-3.5 h-3.5 opacity-70" />
                             仅校对文本 (.txt)
                         </button>
                         <button 
-                            onClick={handleExportReport}
-                            className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 hover:text-brand-600"
+                            onClick={handleExportWord}
+                            className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 hover:text-brand-600 flex items-center gap-2"
                         >
+                            <FileText className="w-3.5 h-3.5 opacity-70 text-blue-600" />
+                            Word 文档 (.doc)
+                        </button>
+                        <button 
+                            onClick={handleExportReport}
+                            className="w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 hover:text-brand-600 flex items-center gap-2"
+                        >
+                            <FileText className="w-3.5 h-3.5 opacity-70 text-purple-600" />
                             完整报告 (.md)
                         </button>
                     </div>

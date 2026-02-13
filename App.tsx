@@ -6,7 +6,7 @@ import { ProofreadResult, LoadingState, RuleLibrary } from './types';
 import { ResultView } from './components/ResultView';
 import { RuleManagerModal } from './components/RuleManagerModal';
 import { SensitiveWordsModal } from './components/SensitiveWordsModal';
-import { Wand2, Eraser, AlertCircle, BookOpenCheck, Upload, FileText, X, FileImage, FileType, Sparkles, Zap, ShieldCheck, Trash2, Book, ShieldAlert, Cpu, ChevronDown, FileBadge } from 'lucide-react';
+import { Wand2, Eraser, AlertCircle, BookOpenCheck, Upload, FileText, X, FileImage, FileType, Sparkles, Zap, ShieldCheck, Trash2, Book, ShieldAlert, Cpu, ChevronDown, FileBadge, PenTool } from 'lucide-react';
 
 // Configure PDF.js worker
 GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs`;
@@ -403,11 +403,13 @@ export default function App() {
        if (mode === 'professional') return '深度扫描中...';
        if (mode === 'sensitive') return '合规扫描中...';
        if (mode === 'official') return '公文审校中...';
+       if (mode === 'polishing') return '智能润色中...';
        return '正在智能校对...';
     }
     if (mode === 'professional') return '开始专业深度校对';
     if (mode === 'sensitive') return '开始合规专项检查';
     if (mode === 'official') return '开始公文规范审校';
+    if (mode === 'polishing') return '开始智能润色改写';
     return '开始校对';
   };
 
@@ -416,6 +418,7 @@ export default function App() {
       if (mode === 'professional') return 'bg-gradient-to-r from-purple-600 to-purple-500 hover:from-purple-500 hover:to-purple-400';
       if (mode === 'sensitive') return 'bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400';
       if (mode === 'official') return 'bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400';
+      if (mode === 'polishing') return 'bg-gradient-to-r from-teal-600 to-teal-500 hover:from-teal-500 hover:to-teal-400';
       return 'bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400';
   };
 
@@ -578,7 +581,10 @@ export default function App() {
                                 <option value="deepseek-reasoner">DeepSeek R1 (Reasoner)</option>
                               </optgroup>
                               <optgroup label="科大讯飞星火 (需配置 Key)">
-                                <option value="spark-ultra">星火 Spark Ultra 4.0</option>
+                                <option value="spark-ultra">星火 Spark 4.0 Ultra</option>
+                                <option value="spark-max">星火 Spark Max (V3.5)</option>
+                                <option value="spark-pro">星火 Spark Pro (V3.0)</option>
+                                <option value="spark-lite">星火 Spark Lite</option>
                               </optgroup>
                           </select>
                           <ChevronDown className="w-3 h-3 text-slate-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -616,12 +622,20 @@ export default function App() {
                       专业深度
                     </button>
                     <button
+                      onClick={() => setMode('polishing')}
+                      disabled={isBusy}
+                      className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'polishing' ? 'bg-teal-100 text-teal-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                    >
+                      <PenTool className="w-3 h-3" />
+                      润色改写
+                    </button>
+                    <button
                       onClick={() => setMode('official')}
                       disabled={isBusy}
                       className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'official' ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                     >
                       <FileBadge className="w-3 h-3" />
-                      公文规范
+                      公文
                     </button>
                     <button
                       onClick={() => setMode('sensitive')}
@@ -629,7 +643,7 @@ export default function App() {
                       className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'sensitive' ? 'bg-rose-100 text-rose-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                     >
                       <ShieldAlert className="w-3 h-3" />
-                      合规专项
+                      合规
                     </button>
                   </div>
 
@@ -684,7 +698,7 @@ export default function App() {
                 </>
               ) : (
                 <>
-                  {mode === 'sensitive' ? <ShieldAlert className="w-5 h-5"/> : (mode === 'official' ? <FileBadge className="w-5 h-5"/> : <Wand2 className="w-5 h-5" />)}
+                  {mode === 'sensitive' ? <ShieldAlert className="w-5 h-5"/> : (mode === 'official' ? <FileBadge className="w-5 h-5"/> : (mode === 'polishing' ? <PenTool className="w-5 h-5" /> : <Wand2 className="w-5 h-5" />))}
                   <span>{getButtonText()}</span>
                 </>
               )}
