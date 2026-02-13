@@ -7,9 +7,20 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    // 优化 pdfjs-dist 的构建支持
+    optimizeDeps: {
+      esbuildOptions: {
+        target: 'esnext'
+      }
+    },
+    build: {
+      target: 'esnext'
+    },
     define: {
       // 关键修复：在构建时将 process.env.API_KEY 替换为具体的值
       'process.env.API_KEY': JSON.stringify(env.API_KEY),
+      'process.env.DEEPSEEK_API_KEY': JSON.stringify(env.DEEPSEEK_API_KEY),
+      'process.env.SPARK_API_KEY': JSON.stringify(env.SPARK_API_KEY),
       // 防止浏览器报错 "process is not defined"
       'process.env': {}
     },

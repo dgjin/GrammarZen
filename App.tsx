@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import mammoth from 'mammoth';
-import * as pdfjsLib from 'pdfjs-dist';
+import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
 import { checkChineseText, Part, CheckMode } from './services/geminiService';
 import { ProofreadResult, LoadingState, RuleLibrary } from './types';
 import { ResultView } from './components/ResultView';
@@ -8,7 +8,7 @@ import { RuleManagerModal } from './components/RuleManagerModal';
 import { Wand2, Eraser, AlertCircle, BookOpenCheck, Upload, FileText, X, FileImage, FileType, Sparkles, Zap, ShieldCheck, Trash2, Book, ShieldAlert, Plus, Ban, Library, Download, Cpu, ChevronDown } from 'lucide-react';
 
 // Configure PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs`;
+GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs`;
 
 const EXAMPLE_TEXT = "我们的产品质量非常优秀，深受客户们的喜爱。但是，在使用过程中，难免会出现一些小问题。比如，链接不稳定、界面卡顿等等。希望大家能够谅解。我们会竟快修复这些bug，保证给大家一个完美得体验。";
 const WHITELIST_KEY = 'grammarzen_whitelist';
@@ -287,7 +287,7 @@ function App() {
       setLoadingState('success');
     } catch (err: any) {
       console.error(err);
-      setError("校验服务暂时不可用，请检查网络或 API Key 设置。");
+      setError(`校验失败: ${err.message || '服务暂时不可用'}`);
       setLoadingState('error');
     }
   };
@@ -339,7 +339,8 @@ function App() {
       if (file.type === 'application/pdf') {
         try {
             const arrayBuffer = result as ArrayBuffer;
-            const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+            // Use getDocument from the named import
+            const loadingTask = getDocument({ data: arrayBuffer });
             const pdf = await loadingTask.promise;
             
             let fullText = "";
@@ -525,7 +526,7 @@ function App() {
               让你的文字更<span className="text-brand-600">专业</span>、更<span className="text-brand-600">流畅</span>
             </h2>
             <p className="text-slate-600 text-lg mb-8">
-              基于业界顶尖的 <span className="font-semibold text-slate-800">PyCorrector / MacBERT</span> 标准，为您提供高精度校对。
+              支持 Google Gemini, DeepSeek, 讯飞星火等多模型，为您提供高精度校对。
             </p>
           </div>
         )}
@@ -619,11 +620,20 @@ function App() {
                           <select
                               value={modelName}
                               onChange={(e) => setModelName(e.target.value)}
-                              className="appearance-none bg-transparent text-sm font-medium text-slate-600 hover:text-brand-600 cursor-pointer pr-6 focus:outline-none transition-colors"
+                              className="appearance-none bg-transparent text-sm font-medium text-slate-600 hover:text-brand-600 cursor-pointer pr-6 focus:outline-none transition-colors max-w-[180px]"
                               disabled={isBusy}
                           >
-                              <option value="gemini-3-flash-preview">Gemini 3.0 Flash (极速)</option>
-                              <option value="gemini-3-pro-preview">Gemini 3.0 Pro (推理)</option>
+                              <optgroup label="Google Gemini">
+                                <option value="gemini-3-flash-preview">Gemini 3.0 Flash</option>
+                                <option value="gemini-3-pro-preview">Gemini 3.0 Pro</option>
+                              </optgroup>
+                              <optgroup label="DeepSeek (需配置 Key)">
+                                <option value="deepseek-chat">DeepSeek V3 (Chat)</option>
+                                <option value="deepseek-reasoner">DeepSeek R1 (Reasoner)</option>
+                              </optgroup>
+                              <optgroup label="科大讯飞星火 (需配置 Key)">
+                                <option value="spark-ultra">星火 Spark Ultra 4.0</option>
+                              </optgroup>
                           </select>
                           <ChevronDown className="w-3 h-3 text-slate-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none" />
                       </div>
