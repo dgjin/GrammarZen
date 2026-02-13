@@ -132,6 +132,7 @@ const parsePartialJson = (json: string): Partial<ProofreadResult> => {
 export const checkChineseText = async (
   content: string | Part[], 
   mode: CheckMode = 'fast',
+  modelName: string = 'gemini-3-flash-preview',
   whitelist: string[] = [],
   sensitiveWords: string[] = [],
   customRules: string[] = [],
@@ -141,7 +142,8 @@ export const checkChineseText = async (
     throw new Error("API Key is missing");
   }
 
-  const model = "gemini-3-flash-preview";
+  // Use the passed model name
+  const model = modelName;
 
   let systemInstruction = "";
   

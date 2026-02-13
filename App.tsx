@@ -5,7 +5,7 @@ import { checkChineseText, Part, CheckMode } from './services/geminiService';
 import { ProofreadResult, LoadingState, RuleLibrary } from './types';
 import { ResultView } from './components/ResultView';
 import { RuleManagerModal } from './components/RuleManagerModal';
-import { Wand2, Eraser, AlertCircle, BookOpenCheck, Upload, FileText, X, FileImage, FileType, Sparkles, Zap, ShieldCheck, Trash2, Book, ShieldAlert, Plus, Ban, Library, Download } from 'lucide-react';
+import { Wand2, Eraser, AlertCircle, BookOpenCheck, Upload, FileText, X, FileImage, FileType, Sparkles, Zap, ShieldCheck, Trash2, Book, ShieldAlert, Plus, Ban, Library, Download, Cpu, ChevronDown } from 'lucide-react';
 
 // Configure PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs`;
@@ -35,6 +35,7 @@ function App() {
   const [loadingState, setLoadingState] = useState<LoadingState>('idle');
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<CheckMode>('fast');
+  const [modelName, setModelName] = useState('gemini-3-flash-preview');
   
   // File Upload State
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -272,6 +273,7 @@ function App() {
       const data = await checkChineseText(
         content, 
         mode, 
+        modelName,
         whitelist,
         sensitiveWords,
         activeRules,
@@ -608,11 +610,29 @@ function App() {
                    <Upload className="w-4 h-4" />
                    上传文档
                  </button>
+
+                  <div className="h-4 w-px bg-slate-200 mx-1"></div>
+
+                  <div className="relative group flex items-center gap-2">
+                      <Cpu className="w-4 h-4 text-slate-400 group-hover:text-brand-500 transition-colors" />
+                      <div className="relative">
+                          <select
+                              value={modelName}
+                              onChange={(e) => setModelName(e.target.value)}
+                              className="appearance-none bg-transparent text-sm font-medium text-slate-600 hover:text-brand-600 cursor-pointer pr-6 focus:outline-none transition-colors"
+                              disabled={isBusy}
+                          >
+                              <option value="gemini-3-flash-preview">Gemini 3.0 Flash (极速)</option>
+                              <option value="gemini-3-pro-preview">Gemini 3.0 Pro (推理)</option>
+                          </select>
+                          <ChevronDown className="w-3 h-3 text-slate-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      </div>
+                  </div>
                  
                  {(!inputText && !attachment) && (
                    <button
                      onClick={loadExample}
-                     className="text-xs font-medium text-brand-600 hover:text-brand-700 px-3 py-1.5 rounded-full hover:bg-brand-50 transition-colors"
+                     className="text-xs font-medium text-brand-600 hover:text-brand-700 px-3 py-1.5 rounded-full hover:bg-brand-50 transition-colors ml-2"
                      disabled={isBusy}
                    >
                      试一试示例
