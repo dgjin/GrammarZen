@@ -1,0 +1,5 @@
+{
+  "name": "GrammarZen - 中文智能校对",
+  "description": "基于 Gemini 的智能中文校对工具，帮助您发现错别字、语病并优化文案风格。",
+  "requestFramePermissions": []
+}
