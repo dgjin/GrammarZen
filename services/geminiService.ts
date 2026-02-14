@@ -264,6 +264,7 @@ export const checkChineseText = async (
   whitelist: string[] = [],
   sensitiveWords: string[] = [],
   customRules: string[] = [],
+  userPrompt: string = "",
   onUpdate?: (partial: ProofreadResult) => void
 ): Promise<ProofreadResult> => {
 
@@ -280,6 +281,10 @@ export const checkChineseText = async (
 
   const customRulesInstruction = customRules.length > 0
     ? `\n\n【用户自定义校验规则库】\n除了通用的校对标准外，你**必须**严格执行以下用户指定的特殊规则。如果发现违反以下规则的内容，请标记为 'sensitive' (如果是合规类) 或 'style' (如果是格式/术语类)，并在 reason 中明确指出违反了哪条规则：\n${customRules.map((r, i) => `${i+1}. ${r}`).join('\n')}\n`
+    : "";
+  
+  const userPromptInstruction = userPrompt.trim()
+    ? `\n\n【用户临时自定义指令】\n用户对本次校对有以下特殊要求，请务必严格遵守：\n${userPrompt}\n`
     : "";
   
   // PII Instruction
@@ -410,6 +415,9 @@ export const checkChineseText = async (
       请找出：错别字、语法错误、敏感词与合规问题、个人隐私泄露风险、简单的润色建议。
     `;
   }
+
+  // Inject User Custom Prompt
+  systemInstruction += userPromptInstruction;
 
   // Schema instruction for JSON Output
   systemInstruction += `

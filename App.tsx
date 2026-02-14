@@ -7,7 +7,8 @@ import { ResultView } from './components/ResultView';
 import { RuleManagerModal } from './components/RuleManagerModal';
 import { SensitiveWordsModal } from './components/SensitiveWordsModal';
 import { PDFProcessModal } from './components/PDFProcessModal';
-import { Wand2, Eraser, AlertCircle, BookOpenCheck, Upload, FileText, X, FileImage, FileType, Sparkles, Zap, ShieldCheck, Trash2, Book, ShieldAlert, Cpu, ChevronDown, FileBadge, PenTool, LayoutTemplate, Check, Loader2, FileSearch } from 'lucide-react';
+import { HelpModal } from './components/HelpModal';
+import { Wand2, Eraser, AlertCircle, BookOpenCheck, Upload, FileText, X, FileImage, FileType, Sparkles, Zap, ShieldCheck, Trash2, Book, ShieldAlert, Cpu, ChevronDown, FileBadge, PenTool, LayoutTemplate, Check, Loader2, FileSearch, CircleHelp, MessageSquarePlus } from 'lucide-react';
 
 // Configure PDF.js worker
 GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs`;
@@ -17,7 +18,7 @@ const WHITELIST_KEY = 'grammarzen_whitelist';
 const SENSITIVE_WORDS_KEY = 'grammarzen_sensitive_words';
 const RULE_LIBS_KEY = 'grammarzen_rule_libs';
 
-interface Attachment {
+export interface Attachment {
   name: string;
   mimeType: string;
   data: string; // Base64 (Full file content)
@@ -69,6 +70,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<CheckMode>('fast');
   const [modelName, setModelName] = useState('gemini-3-flash-preview');
+  const [userPrompt, setUserPrompt] = useState('');
   
   // File Upload State
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -92,6 +94,9 @@ export default function App() {
   const [ruleLibraries, setRuleLibraries] = useState<RuleLibrary[]>([]);
   const [selectedLibIds, setSelectedLibIds] = useState<Set<string>>(new Set());
   const [showRuleManager, setShowRuleManager] = useState(false);
+  
+  // Help Modal State
+  const [showHelpModal, setShowHelpModal] = useState(false);
   
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -331,6 +336,7 @@ export default function App() {
         whitelist,
         sensitiveWords,
         activeRules,
+        userPrompt,
         (partialResult) => {
            // On first update, switch to streaming state so ResultView appears
            setLoadingState('streaming');
@@ -621,6 +627,7 @@ export default function App() {
 
   const clearInput = () => {
     setInputText('');
+    setUserPrompt('');
     setAttachment(null);
     setResult(null);
     setLoadingState('idle');
@@ -667,6 +674,9 @@ export default function App() {
       return 'bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400';
   };
 
+  // Character Count
+  const charCount = inputText.length;
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans">
       {/* Header */}
@@ -684,6 +694,14 @@ export default function App() {
             </span>
           </div>
           <div className="flex items-center gap-2">
+             <button
+                onClick={() => setShowHelpModal(true)}
+                className="text-xs text-slate-500 hover:text-brand-600 flex items-center gap-1 transition-colors px-3 py-1.5 rounded-full hover:bg-slate-50 border border-transparent hover:border-slate-200"
+            >
+                <CircleHelp className="w-3.5 h-3.5" />
+                帮助
+            </button>
+            <div className="w-px h-4 bg-slate-200 mx-1"></div>
             <button
                 onClick={() => setShowRuleManager(true)}
                 className="text-xs text-slate-600 hover:text-brand-600 flex items-center gap-1 transition-colors px-3 py-1.5 rounded-full hover:bg-slate-50 border border-transparent hover:border-slate-200"
@@ -691,7 +709,6 @@ export default function App() {
                 <Book className="w-3.5 h-3.5" />
                 本地规则库
             </button>
-            <div className="w-px h-4 bg-slate-200 mx-1"></div>
             <button 
                 onClick={() => setShowSensitiveModal(true)} 
                 className="text-xs text-rose-600 hover:text-rose-700 flex items-center gap-1 transition-colors px-3 py-1.5 rounded-full hover:bg-rose-50 border border-transparent hover:border-rose-100"
@@ -886,6 +903,11 @@ export default function App() {
                </div>
 
                <div className="flex items-center gap-4">
+                  {/* Char Count */}
+                  <div className="text-xs font-medium text-slate-400 font-mono hidden sm:block">
+                     {charCount} 字
+                  </div>
+
                   {/* Mode Toggle */}
                   <div className="flex items-center flex-wrap bg-white border border-slate-200 rounded-lg p-0.5">
                     <button
@@ -974,6 +996,23 @@ export default function App() {
              </div>
           )}
 
+          {/* Custom User Prompt Input */}
+          <div className="mt-3 px-1 animate-fade-in">
+             <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <MessageSquarePlus className="h-4 w-4 text-slate-400" />
+                </div>
+                <input
+                  type="text"
+                  value={userPrompt}
+                  onChange={(e) => setUserPrompt(e.target.value)}
+                  disabled={isBusy}
+                  className="block w-full pl-10 pr-3 py-2 border border-slate-200 rounded-lg leading-5 bg-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-brand-500 focus:border-brand-500 sm:text-sm transition-shadow shadow-sm"
+                  placeholder="（可选）输入本次校对的特殊指令，例如：‘语气更正式一点’、‘检查人名是否正确’..."
+                />
+             </div>
+          </div>
+
           {/* Action Button */}
           <div className="mt-4 flex justify-center sm:justify-end">
             <button
@@ -1015,6 +1054,7 @@ export default function App() {
                 result={result} 
                 originalText={inputText} 
                 onAddToWhitelist={handleAddToWhitelist}
+                attachment={attachment}
              />
            </div>
         )}
@@ -1128,6 +1168,12 @@ export default function App() {
         libraries={ruleLibraries}
         onAddLibrary={handleAddLibrary}
         onDeleteLibrary={handleDeleteLibrary}
+      />
+
+      {/* Help Modal */}
+      <HelpModal 
+        isOpen={showHelpModal}
+        onClose={() => setShowHelpModal(false)}
       />
     </div>
   );

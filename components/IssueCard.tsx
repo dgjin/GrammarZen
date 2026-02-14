@@ -3,6 +3,7 @@ import { Issue, IssueType } from '../types';
 import { AlertCircle, Type, Sparkles, ShieldAlert, Check, X, ShieldPlus, MessageSquareQuote, Lock, LayoutTemplate } from 'lucide-react';
 
 interface IssueCardProps {
+  id?: string;
   issue: Issue;
   isSelected?: boolean;
   onClick?: () => void;
@@ -88,12 +89,13 @@ const getIssueConfig = (type: IssueType) => {
   }
 };
 
-export const IssueCard: React.FC<IssueCardProps> = ({ issue, isSelected, onClick, onAccept, onIgnore, onWhitelist }) => {
+export const IssueCard: React.FC<IssueCardProps> = ({ id, issue, isSelected, onClick, onAccept, onIgnore, onWhitelist }) => {
   const config = getIssueConfig(issue.type);
   const Icon = config.icon;
 
   return (
     <div 
+      id={id}
       onClick={onClick}
       className={`
         p-4 rounded-xl border transition-all duration-200 group cursor-pointer relative bg-white
