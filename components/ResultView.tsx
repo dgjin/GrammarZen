@@ -77,8 +77,9 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
   // Effect to scroll to highlighted issue in TEXT view
   useEffect(() => {
     if (selectedIssueIndex !== null && selectionSource !== 'text') {
-      const el = document.getElementById(`diff-ref-${selectedIssueIndex}`);
-      if (el && textContainerRef.current) {
+      // Use querySelector to find element by data attribute
+      const el = textContainerRef.current?.querySelector(`[data-issue-id="${selectedIssueIndex}"]`);
+      if (el) {
         isAutoScrolling.current = true;
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         // Reset lock after animation approx time
@@ -124,7 +125,8 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
 
     // Find the issue closest to the center of the view
     filteredIssues.forEach(issue => {
-      const el = document.getElementById(`diff-ref-${issue.originalIndex}`);
+      // Use querySelector for robustness
+      const el = textContainerRef.current?.querySelector(`[data-issue-id="${issue.originalIndex}"]`);
       if (el) {
         const rect = el.getBoundingClientRect();
         // Only consider elements that are visible or close to visible
@@ -579,7 +581,8 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
           return (
             <span 
               key={index} 
-              id={hasIssue ? `diff-ref-${part.issueIndex}` : undefined} 
+              // Using data attribute instead of ID to avoid duplicates for split issues
+              data-issue-id={hasIssue ? part.issueIndex : undefined}
               className={`${finalClass} ${hasIssue ? 'cursor-pointer hover:bg-yellow-100' : ''}`}
               onClick={hasIssue ? (e) => {
                   e.stopPropagation();
