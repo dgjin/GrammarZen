@@ -16,7 +16,7 @@ export interface Part {
   };
 }
 
-export type CheckMode = 'fast' | 'professional' | 'sensitive' | 'official' | 'polishing';
+export type CheckMode = 'fast' | 'professional' | 'sensitive' | 'official' | 'polishing' | 'format' | 'file_scan';
 
 /**
  * Extracts specific validation rules. Defaults to Gemini for this helper task.
@@ -281,23 +281,49 @@ export const checkChineseText = async (
   const customRulesInstruction = customRules.length > 0
     ? `\n\n【用户自定义校验规则库】\n除了通用的校对标准外，你**必须**严格执行以下用户指定的特殊规则。如果发现违反以下规则的内容，请标记为 'sensitive' (如果是合规类) 或 'style' (如果是格式/术语类)，并在 reason 中明确指出违反了哪条规则：\n${customRules.map((r, i) => `${i+1}. ${r}`).join('\n')}\n`
     : "";
+  
+  // PII Instruction
+  const piiInstruction = `
+    \n【个人隐私信息检测】
+    请严格检测并标记文本中的个人敏感信息（PII），包括但不限于：
+    1. **证件号码**：身份证号、护照号、驾照号。
+    2. **金融账户**：银行卡号、信用卡号。
+    3. **联系方式**：手机号码、固定电话。
+    4. **社保医保**：社保卡号、医保卡号。
+    5. **位置信息**：详细的家庭住址（包含街道门牌号）。
+    
+    发现此类信息时：
+    - 类型(type)必须标记为 'privacy'。
+    - 建议(suggestion)应进行脱敏处理（例如：使用 '*' 遮挡中间位数，如 138****1234）。
+    - 原因(reason)注明具体泄露的隐私类型（如“涉嫌泄露身份证号”）。
+  `;
 
   if (mode === 'sensitive') {
     systemInstruction = `
       你是一名严格的内容安全与合规审核专家。你的**唯一任务**是审查文本中的违规内容和敏感词。
-      【检查范围】1. 用户自定义敏感词库。 2. 广告法合规（极限词）。 3. 内容安全（涉政/色情/暴力）。 4. 歧视与仇恨言论。
+      【检查范围】
+      1. **个人隐私信息(PII)**：严格检测身份证、银行卡、电话、社保/医保号、住址等。
+      2. 用户自定义敏感词库。
+      3. 广告法合规（极限词）。
+      4. 内容安全（涉政/色情/暴力）。
+      5. 歧视与仇恨言论。
+      
       【忽略项】忽略错别字、语法、文风建议。
+      
       ${whitelistInstruction}
       ${sensitiveWordsInstruction}
+      ${piiInstruction}
+      
       如果发现自定义规则库中的内容，请视为合规性要求进行检查：
       ${customRulesInstruction}
-      请只返回 'sensitive' 类型的 Issue。除非原文全是乱码无法阅读，否则 'score' 评分应主要反映合规程度（100表示完全合规，分值越低违规越严重）。
+      请只返回 'sensitive' 或 'privacy' 类型的 Issue。除非原文全是乱码无法阅读，否则 'score' 评分应主要反映合规程度（100表示完全合规，分值越低违规越严重）。
     `;
   } else if (mode === 'official') {
     systemInstruction = `
       你是一名资深的党政机关公文写作与审核专家。你的任务是对用户提供的公文内容进行严格的政治把关和规范性校对。
       ${whitelistInstruction}
       ${sensitiveWordsInstruction}
+      ${piiInstruction}
       ${customRulesInstruction}
       
       请重点进行以下检查：
@@ -306,7 +332,7 @@ export const checkChineseText = async (
       3. **逻辑与结构**：检查层次是否清晰，逻辑是否严密，搭配是否得当。
       4. **基础校对**：检查错别字、标点符号（重点关注书名号、引号、序号的规范使用）。
       
-      如果不符合公文规范的表达，请标记为 'style' (规范/格式) 或 'sensitive' (政治/合规) 类型。
+      如果不符合公文规范的表达，请标记为 'style' (规范/格式) 或 'sensitive' (政治/合规) 类型。发现隐私信息标记为 'privacy'。
       Score 评分应反映公文的规范化程度。
     `;
   } else if (mode === 'polishing') {
@@ -320,27 +346,68 @@ export const checkChineseText = async (
       
       ${whitelistInstruction}
       ${sensitiveWordsInstruction}
+      ${piiInstruction}
       ${customRulesInstruction}
       
-      请将你的所有修改（包括词汇替换、句式重组）记录为 'suggestion' (建议) 或 'style' (风格) 类型的 Issue。
+      请将你的所有修改（包括词汇替换、句式重组）记录为 'suggestion' (建议) 或 'style' (风格) 类型的 Issue。如发现隐私信息，请务必标记为 'privacy'。
       correctedText 应该是你润色后的完整最终版本。
       Score 评分应反映原文的文笔优美程度。
+    `;
+  } else if (mode === 'format') {
+     systemInstruction = `
+      你是一名专业的排版设计师和文档规范审查专家。你的任务是根据提供的文档内容（特别是图片/PDF内容），检查其排版格式是否符合标准。
+      
+      重点检查项目：
+      1. **字体使用**：检查标题和正文字体是否统一，是否存在中西文字体混用不当。公文建议使用仿宋/黑体/楷体。
+      2. **字号层级**：检查标题层级（一级、二级）字号是否清晰区分，正文字号是否合适（通常为三号或小四号）。
+      3. **版面布局**：检查页边距是否过窄或过宽，段落缩进是否统一（通常首行缩进2字符）。
+      4. **行间距**：检查行间距是否拥挤或过于稀疏。
+      5. **标点挤压**：检查是否存在标点悬挂、行首出现句号等排版错误。
+      6. **页眉页脚**：如果可见，检查页码位置是否规范。
+      
+      ${whitelistInstruction}
+      
+      请将所有发现的格式、排版、字体相关问题，标记为 'format' 类型。
+      对于 'original' 字段，如果可以定位到具体文本，请填入文本；如果是全局问题（如“页边距过窄”），请填入“全局”或相关段落首句。
+      Score 评分应反映文档的排版美观度和规范度。
+      
+      注意：请忽略错别字和内容逻辑，**只关注格式与排版**。
+     `;
+  } else if (mode === 'file_scan') {
+    systemInstruction = `
+      你是一名全能的文档审核专家。用户上传了原始文件（可能是 PDF、图片或 Word），请直接分析文件内容，进行全方位的综合检查。
+      
+      请根据文件的视觉呈现或提取内容，进行以下检查：
+      1. **内容错误**：错别字、标点错误、语法语病。
+      2. **排版格式**：字体不统一、段落错乱、标题层级不清、页边距异常等。
+      3. **合规安全**：敏感词、违禁词、个人隐私泄露（PII）。
+      4. **逻辑风格**：用词不当、逻辑矛盾。
+      
+      ${whitelistInstruction}
+      ${sensitiveWordsInstruction}
+      ${piiInstruction}
+      ${customRulesInstruction}
+      
+      注意：请尽可能还原原文的上下文。在 'original' 字段中，请准确引用原文片段。
+      Score 评分应反映文档的整体质量。
     `;
   } else if (mode === 'professional') {
     systemInstruction = `
       你是一个基于业界顶尖开源项目标准的专业中文校对引擎，兼具内容合规审核与写作风格润色功能。
       ${whitelistInstruction}
       ${sensitiveWordsInstruction}
+      ${piiInstruction}
       ${customRulesInstruction}
-      请进行深度、严格的校对，重点关注：CSC (错别字/音似/形似)、语法逻辑、标点规范、内容合规与敏感词、文风与表达优化。
+      请进行深度、严格的校对，重点关注：CSC (错别字/音似/形似)、语法逻辑、标点规范、内容合规与敏感词、隐私信息检测、文风与表达优化。
     `;
   } else {
     systemInstruction = `
       你是一位资深的中文编辑和校对专家。你的任务是快速检查用户提供的中文内容。
       ${whitelistInstruction}
       ${sensitiveWordsInstruction}
+      ${piiInstruction}
       ${customRulesInstruction}
-      请找出：错别字、语法错误、敏感词与合规问题、简单的润色建议。
+      请找出：错别字、语法错误、敏感词与合规问题、个人隐私泄露风险、简单的润色建议。
     `;
   }
 
@@ -354,7 +421,7 @@ export const checkChineseText = async (
           "original": "string",
           "suggestion": "string",
           "reason": "string",
-          "type": "enum: typo, grammar, punctuation, style, suggestion, sensitive"
+          "type": "enum: typo, grammar, punctuation, style, suggestion, sensitive, privacy, format"
         }
       ],
       "summary": "string (One sentence summary)",
@@ -367,10 +434,6 @@ export const checkChineseText = async (
   // --- Google Gemini ---
   if (modelName.startsWith('gemini')) {
     if (!geminiApiKey) throw new Error("Please configure Google API Key in .env");
-    
-    // Gemini handles Schema natively via config, so we can strip the explicit JSON instruction text to save tokens, 
-    // BUT keeping it in prompt makes it more robust for switching modes. 
-    // For Gemini SDK, we use the `responseSchema` property which is strictly enforced.
     
     try {
       const resultStream = await googleAI.models.generateContentStream({
@@ -391,7 +454,7 @@ export const checkChineseText = async (
                     original: { type: Type.STRING },
                     suggestion: { type: Type.STRING },
                     reason: { type: Type.STRING },
-                    type: { type: Type.STRING, enum: [IssueType.TYPO, IssueType.GRAMMAR, IssueType.PUNCTUATION, IssueType.STYLE, IssueType.SUGGESTION, IssueType.SENSITIVE] },
+                    type: { type: Type.STRING, enum: [IssueType.TYPO, IssueType.GRAMMAR, IssueType.PUNCTUATION, IssueType.STYLE, IssueType.SUGGESTION, IssueType.SENSITIVE, IssueType.PRIVACY, IssueType.FORMAT] },
                   },
                   required: ["original", "suggestion", "reason", "type"],
                 },

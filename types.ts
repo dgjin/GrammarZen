@@ -4,7 +4,9 @@ export enum IssueType {
   PUNCTUATION = 'punctuation',
   STYLE = 'style',
   SUGGESTION = 'suggestion',
-  SENSITIVE = 'sensitive' // New type for compliance/sensitive words
+  SENSITIVE = 'sensitive', // For compliance/political/ad-law
+  PRIVACY = 'privacy',     // For PII (Phone, ID, Address, etc.)
+  FORMAT = 'format'        // For Fonts, Layout, Spacing, Margins
 }
 
 export interface Issue {

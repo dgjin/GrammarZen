@@ -73,11 +73,10 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
       }));
 
       // If user ignores/whitelists, we revert the specific change in currentText
-      // Note: Reverting text based on string replacement is risky if duplicates exist.
-      // Ideally we would rebuild text from diffs, but for now strict replacement of the suggestion with original is a best-effort.
       if (action === 'ignore' || action === 'whitelist') {
           // Revert correction
           // Warning: This simple replace might be ambiguous for duplicates.
+          // Ideally we would rebuild text from diffs, but for now strict replacement of the suggestion with original is a best-effort.
           setCurrentText(prev => prev.replace(issueSuggestion, issueOriginal));
           
           if (action === 'whitelist') {
@@ -139,7 +138,6 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
   };
 
   const handleExportWord = () => {
-    // Generate an HTML-compatible Word document
     const header = `
       <html xmlns:o='urn:schemas-microsoft-com:office:office' 
             xmlns:w='urn:schemas-microsoft-com:office:word' 
@@ -154,20 +152,20 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
       <body>`;
     const footer = "</body></html>";
     
-    // Convert newlines to paragraphs for better formatting in Word
     const contentHtml = currentText.split('\n').map(line => {
-        if (!line.trim()) return ''; // Skip empty lines or use <br/> if stricter preservation needed
+        if (!line.trim()) return ''; 
         return `<p>${line}</p>`;
     }).join('');
     
     const sourceHTML = header + contentHtml + footer;
-    
     downloadFile(sourceHTML, `grammarzen-export-${Date.now()}.doc`, 'application/msword');
   };
 
   const handleExportReport = () => {
     const typeLabels: Record<string, string> = {
       [IssueType.SENSITIVE]: "敏感/合规",
+      [IssueType.PRIVACY]: "隐私安全",
+      [IssueType.FORMAT]: "格式/字体",
       [IssueType.TYPO]: "错别字",
       [IssueType.GRAMMAR]: "语病",
       [IssueType.PUNCTUATION]: "标点",
@@ -182,7 +180,6 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
     report += `## 校对后文本\n\n${currentText}\n\n`;
     report += `## 问题列表\n\n`;
     
-    // Only show active issues in report
     const activeIssues = result.issues.filter((_, idx) => !resolvedIndices.has(idx));
     
     if (activeIssues.length === 0) {
@@ -207,138 +204,154 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
 
   // --- Advanced Diff & Highlight Logic ---
 
+  // 1. Calculate precise locations of issues in the ORIGINAL text based on the INITIAL result.
+  // This provides a stable anchor for highlighting even if duplicates exist.
+  const issueLocations = useMemo(() => {
+    if (!result || !originalText) return [];
+    
+    // We diff the original against the AI's initial corrected text to establish ground truth locations
+    const changes = diffChars(originalText, result.correctedText);
+    
+    // Build blocks map to group related changes (removed + added pairs)
+    const blocks: { origStart: number, origEnd: number, origText: string, corrText: string }[] = [];
+    let currentBlock: { origStart: number, origEnd: number, origText: string, corrText: string } | null = null;
+    let oIdx = 0;
+    
+    for (const change of changes) {
+        if (change.added || change.removed) {
+            if (!currentBlock) {
+                currentBlock = { origStart: oIdx, origEnd: oIdx, origText: "", corrText: "" };
+            }
+            if (change.removed) {
+                currentBlock.origText += change.value;
+                currentBlock.origEnd += change.value.length;
+            }
+            if (change.added) {
+                currentBlock.corrText += change.value;
+            }
+        } else {
+            if (currentBlock) {
+                blocks.push(currentBlock);
+                currentBlock = null;
+            }
+            oIdx += change.value.length;
+        }
+        if (change.removed) oIdx += change.value.length;
+    }
+    if (currentBlock) blocks.push(currentBlock);
+    
+    // Map each issue to a specific block/range
+    const locations = result.issues.map(() => ({ start: -1, end: -1 }));
+    let blockCursor = 0;
+    
+    result.issues.forEach((issue, idx) => {
+        // Sequential search starting from last cursor to handle order
+        for (let i = blockCursor; i < blocks.length; i++) {
+            const block = blocks[i];
+            const origMatch = block.origText.indexOf(issue.original);
+            const corrMatch = block.corrText.indexOf(issue.suggestion);
+
+            // Match if either original text or suggestion is found in the diff block
+            const hasMatch = (issue.original && origMatch !== -1) || (issue.suggestion && corrMatch !== -1);
+            
+            if (hasMatch) {
+                if (issue.original && origMatch !== -1) {
+                    locations[idx] = {
+                        start: block.origStart + origMatch,
+                        end: block.origStart + origMatch + issue.original.length
+                    };
+                } else {
+                    // Insertion or pure suggestion match
+                    locations[idx] = {
+                        start: block.origStart,
+                        end: block.origStart // Anchor point
+                    };
+                }
+                blockCursor = i; 
+                return;
+            }
+        }
+    });
+    return locations;
+  }, [originalText, result]);
+
+  // 2. Generate Renderable Diff Parts
   const processedDiffs = useMemo(() => {
+    // Diff Original vs Current (Modified by User)
     const rawDiffs = (originalText && originalText.length > 0) 
       ? diffChars(originalText, currentText) 
       : [{ value: currentText, added: true, removed: false } as Change];
-
+    
+    // If no issue selected or invalid selection, return plain diff
     const issue = selectedIssueIndex !== null ? result.issues[selectedIssueIndex] : null;
+    const target = selectedIssueIndex !== null ? issueLocations[selectedIssueIndex] : null;
 
-    if (!issue) {
-      return rawDiffs.map(d => ({ ...d, highlighted: false }));
+    if (!issue || !target || (target.start === -1 && target.end === -1)) {
+        return rawDiffs.map(d => ({ ...d, highlighted: false }));
     }
 
-    // 1. Reconstruct texts and establish coordinate mappings
-    let origText = "";
-    let corrText = "";
-    
-    // Mapping: diff chunk index -> { start pos in orig, start pos in corr, length }
-    const chunkMapping = rawDiffs.map(d => {
-        const m = { 
-            origStart: d.added ? -1 : origText.length, 
-            corrStart: d.removed ? -1 : corrText.length,
-            len: d.value.length
-        };
-        if (!d.added) origText += d.value;
-        if (!d.removed) corrText += d.value;
-        return m;
-    });
-
-    // 2. Helper to find all ranges of a substring
-    const getRanges = (text: string, search: string) => {
-         const ranges: [number, number][] = [];
-         if (!search) return ranges;
-         let idx = text.indexOf(search);
-         while (idx !== -1) {
-             ranges.push([idx, idx + search.length]);
-             idx = text.indexOf(search, idx + 1);
-         }
-         return ranges;
-    };
-
-    const origMatches = getRanges(origText, issue.original);
-    const corrMatches = getRanges(corrText, issue.suggestion);
-
-    // 3. Filter Matches based on overlap with active diff chunks (removed/added)
-    // This disambiguates multiple occurrences by preferring those involved in a change.
-    const isComment = issue.original === issue.suggestion;
-    const activeOrigRanges: [number, number][] = [];
-    const activeCorrRanges: [number, number][] = [];
-
-    const rangeOverlapsType = (start: number, end: number, type: 'removed'|'added') => {
-         return rawDiffs.some((d, i) => {
-             if (type === 'removed') {
-                 if (d.added) return false;
-                 const cStart = chunkMapping[i].origStart;
-                 const cEnd = cStart + d.value.length;
-                 if (Math.max(start, cStart) < Math.min(end, cEnd)) {
-                     return d.removed;
-                 }
-             } else { // added
-                 if (d.removed) return false;
-                 const cStart = chunkMapping[i].corrStart;
-                 const cEnd = cStart + d.value.length;
-                 if (Math.max(start, cStart) < Math.min(end, cEnd)) {
-                     return d.added;
-                 }
-             }
-             return false;
-         });
-    };
-
-    origMatches.forEach(r => {
-        if (isComment || rangeOverlapsType(r[0], r[1], 'removed')) {
-            activeOrigRanges.push(r);
-        }
-    });
-    
-    corrMatches.forEach(r => {
-        if (isComment || rangeOverlapsType(r[0], r[1], 'added')) {
-            activeCorrRanges.push(r);
-        }
-    });
-
-    // 4. Split Diff Chunks based on Highlights
     const resultParts: RenderPart[] = [];
+    let currentOrigIndex = 0;
 
-    rawDiffs.forEach((d, i) => {
-        const { origStart, corrStart, len } = chunkMapping[i];
-        
-        // Boolean mask for highlighting within this chunk
-        const mask = new Array(len).fill(false);
-
-        if (!d.added) { // Exists in Original
-            activeOrigRanges.forEach(([s, e]) => {
-                const start = Math.max(s, origStart);
-                const end = Math.min(e, origStart + len);
-                if (start < end) {
-                    for(let k=start; k<end; k++) mask[k - origStart] = true;
-                }
-            });
-        }
-        
-        if (!d.removed) { // Exists in Corrected
-             activeCorrRanges.forEach(([s, e]) => {
-                const start = Math.max(s, corrStart);
-                const end = Math.min(e, corrStart + len);
-                if (start < end) {
-                    for(let k=start; k<end; k++) mask[k - corrStart] = true;
-                }
-            });
+    rawDiffs.forEach(d => {
+        // Equal chunks
+        if (!d.added && !d.removed) {
+            resultParts.push({ ...d, highlighted: false });
+            currentOrigIndex += d.value.length;
+            return;
         }
 
-        // Split chunk by mask segments
-        let currentStr = "";
-        let currentHighlight = mask[0];
-
-        for(let k=0; k<len; k++) {
-            if (mask[k] !== currentHighlight) {
-                if (currentStr) {
-                    resultParts.push({ ...d, value: currentStr, highlighted: currentHighlight });
-                }
-                currentStr = "";
-                currentHighlight = mask[k];
-            }
-            currentStr += d.value[k];
+        // Removed chunks (Red)
+        if (d.removed) {
+             const chunkStart = currentOrigIndex;
+             const chunkEnd = currentOrigIndex + d.value.length;
+             
+             // Check overlapping range
+             const overlapStart = Math.max(chunkStart, target.start);
+             const overlapEnd = Math.min(chunkEnd, target.end);
+             
+             if (overlapStart < overlapEnd) {
+                 // Split chunk: Pre (unhighlighted) -> High (highlighted) -> Post (unhighlighted)
+                 const preLen = overlapStart - chunkStart;
+                 const highLen = overlapEnd - overlapStart;
+                 
+                 if (preLen > 0) resultParts.push({ ...d, value: d.value.substring(0, preLen), highlighted: false });
+                 resultParts.push({ ...d, value: d.value.substring(preLen, preLen + highLen), highlighted: true });
+                 if (preLen + highLen < d.value.length) resultParts.push({ ...d, value: d.value.substring(preLen + highLen), highlighted: false });
+             } else {
+                 resultParts.push({ ...d, highlighted: false });
+             }
+             
+             currentOrigIndex += d.value.length;
+             return;
         }
-        if (currentStr) {
-             resultParts.push({ ...d, value: currentStr, highlighted: currentHighlight });
+
+        // Added chunks (Green)
+        if (d.added) {
+             // Added chunks don't consume original text index, they anchor to currentOrigIndex
+             // Check if anchor is within or touching target range
+             if (currentOrigIndex >= target.start && currentOrigIndex <= target.end) {
+                 // Try to highlight specifically the suggestion text within this chunk
+                 const idx = d.value.indexOf(issue.suggestion);
+                 
+                 if (idx !== -1) {
+                     if (idx > 0) resultParts.push({ ...d, value: d.value.substring(0, idx), highlighted: false });
+                     resultParts.push({ ...d, value: d.value.substring(idx, idx + issue.suggestion.length), highlighted: true });
+                     if (idx + issue.suggestion.length < d.value.length) resultParts.push({ ...d, value: d.value.substring(idx + issue.suggestion.length), highlighted: false });
+                 } else {
+                     // Fallback: Highlight whole chunk if strict match failed but locations align
+                     resultParts.push({ ...d, highlighted: true });
+                 }
+             } else {
+                 resultParts.push({ ...d, highlighted: false });
+             }
+             return;
         }
     });
 
     return resultParts;
 
-  }, [originalText, currentText, selectedIssueIndex, result]);
+  }, [originalText, currentText, selectedIssueIndex, issueLocations, result]);
 
 
   // Render Functions
@@ -358,12 +371,11 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
           }
 
           // Highlight Overlay
+          // Use a stronger highlight style for pinpointed issues
           const highlightClass = part.highlighted 
-            ? "bg-amber-200 ring-1 ring-amber-300 text-amber-900 shadow-sm"
+            ? "bg-yellow-200 ring-2 ring-yellow-400 text-yellow-900 font-medium z-10 relative shadow-sm"
             : "";
           
-          // Combine: Highlight overrides background of base diff styles slightly but keeps text decoration
-          // If highlighted, we replace bg color.
           const finalClass = part.highlighted 
              ? `${baseClass.replace(/bg-[\w-]+/, '')} ${highlightClass}`
              : baseClass;
@@ -393,6 +405,8 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
   const counts = {
     all: currentUnresolved.length,
     [IssueType.SENSITIVE]: currentUnresolved.filter(i => i.type === IssueType.SENSITIVE).length,
+    [IssueType.PRIVACY]: currentUnresolved.filter(i => i.type === IssueType.PRIVACY).length,
+    [IssueType.FORMAT]: currentUnresolved.filter(i => i.type === IssueType.FORMAT).length,
     [IssueType.TYPO]: currentUnresolved.filter(i => i.type === IssueType.TYPO).length,
     [IssueType.GRAMMAR]: currentUnresolved.filter(i => i.type === IssueType.GRAMMAR).length,
     [IssueType.PUNCTUATION]: currentUnresolved.filter(i => i.type === IssueType.PUNCTUATION).length,
@@ -514,6 +528,7 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
           <div className="px-4 py-2 bg-slate-50 border-t border-slate-100 text-xs flex gap-4 text-slate-500">
              <span className="flex items-center gap-1"><span className="w-3 h-3 bg-red-100 border border-red-200 rounded-sm block"></span> 删除内容</span>
              <span className="flex items-center gap-1"><span className="w-3 h-3 bg-green-100 border border-green-200 rounded-sm block"></span> 新增内容</span>
+             <span className="flex items-center gap-1"><span className="w-3 h-3 bg-yellow-200 ring-1 ring-yellow-400 rounded-sm block"></span> 当前选中问题</span>
           </div>
         )}
       </div>
@@ -571,6 +586,8 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
              <div className="flex flex-wrap gap-2">
                 <FilterButton type="all" label="全部" count={counts.all} colorClass="bg-slate-800 text-white border-slate-800" />
                 <FilterButton type={IssueType.SENSITIVE} label="合规/敏感" count={counts[IssueType.SENSITIVE]} colorClass="bg-rose-600 text-white border-rose-600" />
+                <FilterButton type={IssueType.PRIVACY} label="隐私安全" count={counts[IssueType.PRIVACY]} colorClass="bg-amber-500 text-white border-amber-500" />
+                <FilterButton type={IssueType.FORMAT} label="格式/字体" count={counts[IssueType.FORMAT]} colorClass="bg-slate-500 text-white border-slate-500" />
                 <FilterButton type={IssueType.TYPO} label="错别字" count={counts[IssueType.TYPO]} colorClass="bg-red-500 text-white border-red-500" />
                 <FilterButton type={IssueType.GRAMMAR} label="语病" count={counts[IssueType.GRAMMAR]} colorClass="bg-orange-500 text-white border-orange-500" />
                 <FilterButton type={IssueType.PUNCTUATION} label="标点" count={counts[IssueType.PUNCTUATION]} colorClass="bg-blue-500 text-white border-blue-500" />

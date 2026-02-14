@@ -1,6 +1,6 @@
 import React from 'react';
 import { Issue, IssueType } from '../types';
-import { AlertCircle, Type, Sparkles, ShieldAlert, Check, X, ShieldPlus, MessageSquareQuote } from 'lucide-react';
+import { AlertCircle, Type, Sparkles, ShieldAlert, Check, X, ShieldPlus, MessageSquareQuote, Lock, LayoutTemplate } from 'lucide-react';
 
 interface IssueCardProps {
   issue: Issue;
@@ -22,6 +22,26 @@ const getIssueConfig = (type: IssueType) => {
         badgeBg: 'bg-rose-100',
         badgeText: 'text-rose-700',
         badgeBorder: 'border-rose-200'
+      };
+    case IssueType.PRIVACY:
+      return {
+        icon: Lock,
+        label: '隐私安全',
+        borderColor: 'border-amber-200',
+        bgHover: 'hover:bg-amber-50/50',
+        badgeBg: 'bg-amber-100',
+        badgeText: 'text-amber-700',
+        badgeBorder: 'border-amber-200'
+      };
+    case IssueType.FORMAT:
+      return {
+        icon: LayoutTemplate,
+        label: '格式/字体',
+        borderColor: 'border-slate-300',
+        bgHover: 'hover:bg-slate-50/80',
+        badgeBg: 'bg-slate-200',
+        badgeText: 'text-slate-700',
+        badgeBorder: 'border-slate-300'
       };
     case IssueType.TYPO:
       return {

@@ -6,7 +6,8 @@ import { ProofreadResult, LoadingState, RuleLibrary } from './types';
 import { ResultView } from './components/ResultView';
 import { RuleManagerModal } from './components/RuleManagerModal';
 import { SensitiveWordsModal } from './components/SensitiveWordsModal';
-import { Wand2, Eraser, AlertCircle, BookOpenCheck, Upload, FileText, X, FileImage, FileType, Sparkles, Zap, ShieldCheck, Trash2, Book, ShieldAlert, Cpu, ChevronDown, FileBadge, PenTool } from 'lucide-react';
+import { PDFProcessModal } from './components/PDFProcessModal';
+import { Wand2, Eraser, AlertCircle, BookOpenCheck, Upload, FileText, X, FileImage, FileType, Sparkles, Zap, ShieldCheck, Trash2, Book, ShieldAlert, Cpu, ChevronDown, FileBadge, PenTool, LayoutTemplate, Check, Loader2, FileSearch } from 'lucide-react';
 
 // Configure PDF.js worker
 GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs`;
@@ -19,9 +20,46 @@ const RULE_LIBS_KEY = 'grammarzen_rule_libs';
 interface Attachment {
   name: string;
   mimeType: string;
-  data: string; // Base64
+  data: string; // Base64 (Full file content)
   size: number;
+  visualData?: string[]; // Optional visual representation (Array of Base64 images for selected pages)
 }
+
+// Basic RTF to Text parser
+const parseRTF = (rtf: string): string => {
+    // 1. Replace newlines/tabs
+    let text = rtf.replace(/\\par[d]?/g, '\n')
+                  .replace(/\\tab/g, '\t')
+                  .replace(/\\line/g, '\n')
+                  .replace(/\\row/g, '\n');
+    
+    // 2. Remove group blocks that are likely headers/fonts/stylesheets (heuristics)
+    // Removing {\fonttbl ...}, {\colortbl ...}, {\stylesheet ...}
+    // This is a simple non-recursive regex, it might miss nested braces in complex headers but suffices for basic stripping
+    text = text.replace(/\{\\fonttbl.*?\}\}/g, '')
+               .replace(/\{\\colortbl.*?\}\}/g, '')
+               .replace(/\{\\stylesheet.*?\}\}/g, '');
+
+    // 3. Decode hex characters (e.g. \'c4) - Basic Latin-1/Windows-1252 approximation
+    text = text.replace(/\\'[0-9a-fA-F]{2}/g, (match) => {
+        try {
+            return String.fromCharCode(parseInt(match.slice(2), 16));
+        } catch (e) {
+            return match;
+        }
+    });
+    
+    // 4. Remove other control words (e.g. \b, \fs20, \cf1, \pard)
+    text = text.replace(/\\([a-z]{1,32})(-?\d{1,10})?[ ]?/g, '');
+    
+    // 5. Remove remaining braces and cleanup
+    text = text.replace(/[{}]/g, '')
+               .replace(/\\/g, '') // leftover backslashes
+               .trim();
+
+    // 6. Cleanup multiple newlines
+    return text.replace(/\n\s*\n/g, '\n\n');
+};
 
 export default function App() {
   const [inputText, setInputText] = useState('');
@@ -35,6 +73,12 @@ export default function App() {
   // File Upload State
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isUploading, setIsUploading] = useState(false);
+  const [progressLabel, setProgressLabel] = useState('上传');
+
+  // PDF Processing State
+  const [pendingPDF, setPendingPDF] = useState<{ file: File, doc: any, base64: string } | null>(null);
+  const [showPDFModal, setShowPDFModal] = useState(false);
+  const [pdfPageCount, setPdfPageCount] = useState(0);
 
   // Whitelist State
   const [whitelist, setWhitelist] = useState<string[]>([]);
@@ -177,6 +221,16 @@ export default function App() {
       });
   };
 
+  // Helper: Convert Base64 to ArrayBuffer (for pdfjs/mammoth)
+  const base64ToArrayBuffer = (base64: string): ArrayBuffer => {
+    const binaryString = window.atob(base64);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes.buffer as ArrayBuffer;
+  };
 
   // --- Check Logic ---
   const handleCheck = async () => {
@@ -189,19 +243,76 @@ export default function App() {
     try {
       let content: string | Part[];
 
-      if (attachment) {
-        // Multimodal Request
-        content = [
-          {
-            text: inputText || "请校对这份文件内容。"
-          },
-          {
-            inlineData: {
-              mimeType: attachment.mimeType,
-              data: attachment.data
-            }
-          }
+      // Decide what to send based on Mode
+      // If Format mode, prioritize sending visual data if available (e.g. PDF rendered image)
+      if (mode === 'format' && attachment?.visualData && attachment.visualData.length > 0) {
+         content = [
+            {
+               text: inputText || "请分析这些文档图片的排版、字体、间距和格式规范。"
+            },
+            ...attachment.visualData.map(data => ({
+               inlineData: {
+                  mimeType: "image/jpeg",
+                  data: data
+               }
+            }))
+         ];
+      } else if (mode === 'file_scan' && attachment && attachment.data) {
+        // Original File Scan Mode: Send the raw file (PDF/Image/Word Base64)
+        
+        // Fix: Gemini does not support DOCX/RTF as inlineData. Must use extracted text.
+        const textOnlyMimes = [
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'text/plain',
+            'text/rtf',
+            'application/rtf'
         ];
+
+        if (textOnlyMimes.includes(attachment.mimeType)) {
+             content = inputText || "（未提取到有效文本）";
+        } else {
+             content = [
+                {
+                    text: inputText || "请直接分析上传的文件内容，不需要进行 OCR 转换。"
+                },
+                {
+                    inlineData: {
+                    mimeType: attachment.mimeType,
+                    data: attachment.data
+                    }
+                }
+             ];
+        }
+      } else if (attachment && attachment.data) {
+        // Standard File Mode
+        
+        // Fix: Gemini does not support DOCX/RTF as inlineData.
+        const textOnlyMimes = [
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'text/plain',
+            'text/rtf',
+            'application/rtf'
+        ];
+
+        if (textOnlyMimes.includes(attachment.mimeType)) {
+             content = [
+               {
+                 text: inputText || "请校对这份文件内容。"
+               }
+             ];
+        } else {
+             content = [
+               {
+                 text: inputText || "请校对这份文件内容。"
+               },
+               {
+                 inlineData: {
+                   mimeType: attachment.mimeType,
+                   data: attachment.data
+                 }
+               }
+             ];
+        }
       } else {
         // Text Only Request
         content = inputText;
@@ -244,11 +355,13 @@ export default function App() {
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
       'image/jpeg',
       'image/png',
-      'image/webp'
+      'image/webp',
+      'text/plain', // .txt
+      'text/rtf', 'application/rtf' // .rtf
     ];
 
-    if (!allowedTypes.includes(file.type)) {
-      setError("不支持的文件格式。请上传 PDF, Word (.docx) 或图片 (JPG, PNG, WEBP)。");
+    if (!allowedTypes.includes(file.type) && !file.name.endsWith('.rtf')) { // Simple extension check for RTF if mime varies
+      setError("不支持的文件格式。请上传 PDF, Word, TXT, RTF 或图片。");
       return;
     }
 
@@ -261,6 +374,7 @@ export default function App() {
     setLoadingState('idle');
     setIsUploading(true);
     setUploadProgress(0);
+    setProgressLabel('上传');
 
     const reader = new FileReader();
 
@@ -271,81 +385,134 @@ export default function App() {
       }
     };
 
+    // Read everything as DataURL (Base64) to ensure we always have the raw data for 'Original File' mode
     reader.onload = async (e) => {
-      const result = e.target?.result;
+      const result = e.target?.result as string;
       if (!result) {
          setIsUploading(false);
          return;
       }
+      
+      const base64Data = result.split(',')[1];
+
+      // If generic file type, switch to 'Processing' label during parsing
+      if (file.type !== 'application/pdf') {
+          setProgressLabel('处理');
+      }
 
       // Handle PDF
       if (file.type === 'application/pdf') {
+        // If in 'file_scan' mode, skip text extraction/modal entirely
+        if (mode === 'file_scan') {
+           setAttachment({
+              name: file.name,
+              mimeType: file.type,
+              data: base64Data,
+              size: file.size,
+              visualData: []
+           });
+           setInputText(""); // Clear text extraction
+           setIsUploading(false);
+           if (fileInputRef.current) fileInputRef.current.value = '';
+           return;
+        }
+
         try {
-            const arrayBuffer = result as ArrayBuffer;
-            // Use getDocument from the named import
+            // Convert back to ArrayBuffer for PDF.js
+            const arrayBuffer = base64ToArrayBuffer(base64Data);
             const loadingTask = getDocument({ data: arrayBuffer });
             const pdf = await loadingTask.promise;
             
-            let fullText = "";
-            for (let i = 1; i <= pdf.numPages; i++) {
-                const page = await pdf.getPage(i);
-                const textContent = await page.getTextContent();
-                const pageText = textContent.items.map((item: any) => item.str).join(' ');
-                fullText += pageText + "\n\n";
-            }
-
-            if (fullText.trim().length > 20) {
-                 setInputText(fullText);
-                 setAttachment(null);
-                 if (textareaRef.current) textareaRef.current.focus();
-            } else {
-                 // Fallback to visual mode (scanned PDF)
-                 const bytes = new Uint8Array(arrayBuffer);
-                 let binary = '';
-                 for (let i = 0; i < bytes.byteLength; i++) {
-                    binary += String.fromCharCode(bytes[i]);
-                 }
-                 const base64Data = window.btoa(binary);
-
-                 setAttachment({
-                    name: file.name,
-                    mimeType: file.type,
-                    data: base64Data,
-                    size: file.size
-                  });
-                  setError("未能提取文本（可能是扫描件），已切换为图片识别模式。");
-            }
+            // Set pending state and open modal
+            // We pass base64 here so we don't have to read file again later
+            setPendingPDF({ file, doc: pdf, base64: base64Data });
+            setPdfPageCount(pdf.numPages);
+            setShowPDFModal(true);
+            setIsUploading(false); // Pause uploading UI while waiting for user interaction
+            if (fileInputRef.current) fileInputRef.current.value = '';
+            
         } catch (err) {
             console.error("PDF Parsing Error", err);
             setError("PDF 解析失败，请重试或尝试转换为图片上传。");
+            setIsUploading(false);
         }
+        return; // Early return, wait for modal
       } 
+      
       // Handle Word
       else if (file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
         try {
-          const arrayBuffer = result as ArrayBuffer;
+          // Convert to ArrayBuffer for Mammoth
+          const arrayBuffer = base64ToArrayBuffer(base64Data);
           const mammothResult = await mammoth.extractRawText({ arrayBuffer });
+          
+          // ALWAYS extract text for Word, even in file_scan mode, because Gemini can't process DOCX natively.
           setInputText(mammothResult.value);
-          setAttachment(null);
+
+          setAttachment({
+            name: file.name,
+            mimeType: file.type,
+            data: base64Data,
+            size: file.size
+          });
+
           if (textareaRef.current) textareaRef.current.focus();
         } catch (e) {
           console.error("Word extraction failed", e);
           setError("无法读取 Word 文档，请稍后重试或复制文字粘贴。");
         }
       } 
+      // Handle TXT
+      else if (file.type === 'text/plain') {
+          try {
+             const arrayBuffer = base64ToArrayBuffer(base64Data);
+             const textDecoder = new TextDecoder('utf-8');
+             const text = textDecoder.decode(arrayBuffer);
+             setInputText(text);
+
+             setAttachment({
+                name: file.name,
+                mimeType: file.type,
+                data: base64Data,
+                size: file.size
+             });
+             if (textareaRef.current) textareaRef.current.focus();
+          } catch (e) {
+              console.error("TXT extract failed", e);
+              setError("文本文件读取失败。");
+          }
+      }
+      // Handle RTF
+      else if (file.type === 'application/rtf' || file.type === 'text/rtf' || file.name.endsWith('.rtf')) {
+          try {
+             const arrayBuffer = base64ToArrayBuffer(base64Data);
+             // RTF is mostly ASCII 7-bit, but we decode as UTF-8/ISO safely usually
+             const textDecoder = new TextDecoder('utf-8');
+             const rtfContent = textDecoder.decode(arrayBuffer);
+             const text = parseRTF(rtfContent);
+             setInputText(text);
+
+             setAttachment({
+                name: file.name,
+                mimeType: file.type,
+                data: base64Data,
+                size: file.size
+             });
+             if (textareaRef.current) textareaRef.current.focus();
+          } catch (e) {
+              console.error("RTF extract failed", e);
+              setError("RTF 文件读取失败。");
+          }
+      }
       // Handle Images
       else {
-         const base64String = result as string;
-         const base64Data = base64String.split(',')[1];
-         
          setAttachment({
             name: file.name,
             mimeType: file.type,
             data: base64Data,
-            size: file.size
+            size: file.size,
+            visualData: [base64Data] // Images are their own visual data
           });
-          // Do not clear inputText if user already typed something, or clear it? 
-          // Usually images override text context or serve as context.
       }
       
       setIsUploading(false);
@@ -359,12 +526,84 @@ export default function App() {
         if (fileInputRef.current) fileInputRef.current.value = '';
     };
 
-    // Determine how to read based on type
-    if (file.type.includes('image')) {
-        reader.readAsDataURL(file);
-    } else {
-        // Word and PDF use ArrayBuffer
-        reader.readAsArrayBuffer(file);
+    reader.readAsDataURL(file);
+  };
+
+  // Callback from PDF Modal
+  const handlePDFProcessConfirm = async (pages: number[], scale: number) => {
+    setShowPDFModal(false);
+    if (!pendingPDF) return;
+    
+    setIsUploading(true); // Show progress again
+    setUploadProgress(0);
+    setProgressLabel('解析');
+
+    try {
+        const { doc, file, base64 } = pendingPDF;
+        let extractedText = "";
+        const visualImages: string[] = [];
+
+        // Loop through selected pages
+        for (let i = 0; i < pages.length; i++) {
+            const pageNum = pages[i];
+            const page = await doc.getPage(pageNum);
+            
+            // Extract Text
+            const textContent = await page.getTextContent();
+            const pageText = textContent.items.map((item: any) => item.str).join(' ');
+            extractedText += pageText + "\n\n";
+
+            // Extract Visual Data
+            try {
+                const viewport = page.getViewport({ scale: scale });
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+                
+                if (context) {
+                    await page.render({ canvasContext: context, viewport } as any).promise;
+                    // Store base64 image without prefix for Gemini
+                    visualImages.push(canvas.toDataURL('image/jpeg', 0.8).split(',')[1]);
+                }
+            } catch (visualErr) {
+                console.warn(`Failed to render PDF page ${pageNum} to image`, visualErr);
+            }
+
+            // Update progress
+            setUploadProgress(Math.round(((i + 1) / pages.length) * 100));
+        }
+
+        // Determine if text extraction was successful
+        if (extractedText.trim().length > 20) {
+             setInputText(extractedText);
+             setAttachment({
+                name: file.name,
+                mimeType: file.type,
+                data: base64, // Always store the PDF data now, so we can switch to 'file_scan' mode later if needed
+                size: file.size,
+                visualData: visualImages
+             });
+             if (textareaRef.current) textareaRef.current.focus();
+        } else {
+             // Scanned PDF fallback
+             setAttachment({
+                name: file.name,
+                mimeType: file.type,
+                data: base64, 
+                size: file.size,
+                visualData: visualImages
+             });
+             setError("未能提取有效文本（可能是扫描件），已切换为纯视觉模式。");
+        }
+
+    } catch (e) {
+        console.error("PDF Processing Error", e);
+        setError("PDF 处理过程中发生错误，请重试。");
+    } finally {
+        setPendingPDF(null);
+        setIsUploading(false);
+        setUploadProgress(0);
     }
   };
 
@@ -404,12 +643,16 @@ export default function App() {
        if (mode === 'sensitive') return '合规扫描中...';
        if (mode === 'official') return '公文审校中...';
        if (mode === 'polishing') return '智能润色中...';
+       if (mode === 'format') return '格式分析中...';
+       if (mode === 'file_scan') return '原文件分析中...';
        return '正在智能校对...';
     }
     if (mode === 'professional') return '开始专业深度校对';
     if (mode === 'sensitive') return '开始合规专项检查';
     if (mode === 'official') return '开始公文规范审校';
     if (mode === 'polishing') return '开始智能润色改写';
+    if (mode === 'format') return '开始格式排版分析';
+    if (mode === 'file_scan') return '开始原文件检测';
     return '开始校对';
   };
 
@@ -419,6 +662,8 @@ export default function App() {
       if (mode === 'sensitive') return 'bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400';
       if (mode === 'official') return 'bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400';
       if (mode === 'polishing') return 'bg-gradient-to-r from-teal-600 to-teal-500 hover:from-teal-500 hover:to-teal-400';
+      if (mode === 'format') return 'bg-gradient-to-r from-slate-700 to-slate-600 hover:from-slate-600 hover:to-slate-500';
+      if (mode === 'file_scan') return 'bg-gradient-to-r from-cyan-700 to-cyan-600 hover:from-cyan-600 hover:to-cyan-500';
       return 'bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400';
   };
 
@@ -487,17 +732,22 @@ export default function App() {
             {/* Upload Progress Overlay */}
             {isUploading && (
               <div className="absolute inset-0 z-30 bg-white/90 backdrop-blur-sm flex flex-col items-center justify-center animate-fade-in">
-                 <div className="w-16 h-16 bg-brand-50 rounded-full flex items-center justify-center mb-4 animate-bounce">
-                    <Upload className="w-8 h-8 text-brand-600" />
+                 <div className="w-16 h-16 bg-brand-50 rounded-full flex items-center justify-center mb-4 shadow-sm border border-brand-100">
+                    {progressLabel === '上传' ? (
+                       <Upload className="w-8 h-8 text-brand-600 animate-bounce" />
+                    ) : (
+                       <Loader2 className="w-8 h-8 text-brand-600 animate-spin" />
+                    )}
                  </div>
-                 <div className="w-64 h-2 bg-slate-100 rounded-full overflow-hidden mb-3">
+                 <div className="w-64 h-2 bg-slate-100 rounded-full overflow-hidden mb-3 ring-1 ring-slate-200">
                     <div 
-                        className="h-full bg-brand-500 transition-all duration-300 ease-out rounded-full" 
+                        className="h-full bg-brand-500 transition-all duration-300 ease-out rounded-full shadow-[0_0_10px_rgba(14,165,233,0.4)]" 
                         style={{ width: `${uploadProgress}%` }}
                     />
                  </div>
-                 <p className="text-sm font-medium text-slate-600">
-                    正在上传文件 <span className="text-brand-600 ml-1">{uploadProgress}%</span>
+                 <p className="text-sm font-medium text-slate-600 flex items-center gap-1">
+                    正在{progressLabel}
+                    <span className="text-brand-600 font-bold ml-1">{uploadProgress}%</span>
                  </p>
               </div>
             )}
@@ -512,21 +762,54 @@ export default function App() {
 
             {/* Attachment Preview Overlay (if any) */}
             {attachment && (
-              <div className="mx-5 mt-5 mb-2 p-3 bg-slate-50 border border-slate-200 rounded-lg flex items-center justify-between animate-fade-in">
-                <div className="flex items-center gap-3">
-                  {getFileIcon(attachment.mimeType)}
-                  <div>
-                    <p className="text-sm font-medium text-slate-700 truncate max-w-[200px] sm:max-w-md">{attachment.name}</p>
-                    <p className="text-xs text-slate-500">{(attachment.size / 1024).toFixed(1)} KB</p>
+              <div className="mx-5 mt-5 mb-2 bg-slate-50 border border-slate-200 rounded-lg animate-fade-in flex flex-col">
+                <div className="p-3 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    {getFileIcon(attachment.mimeType)}
+                    <div>
+                      <p className="text-sm font-medium text-slate-700 truncate max-w-[200px] sm:max-w-md">{attachment.name}</p>
+                      <p className="text-xs text-slate-500">{(attachment.size / 1024).toFixed(1)} KB</p>
+                    </div>
                   </div>
+                  <button 
+                    onClick={removeAttachment}
+                    className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"
+                    disabled={isBusy}
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
                 </div>
-                <button 
-                  onClick={removeAttachment}
-                  className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"
-                  disabled={isBusy}
-                >
-                  <X className="w-5 h-5" />
-                </button>
+
+                {/* Visual Data Preview */}
+                {attachment.visualData && attachment.visualData.length > 0 && (
+                   <div className="px-3 pb-3 overflow-x-auto custom-scrollbar">
+                      <div className="flex gap-3">
+                        {attachment.visualData.map((data, idx) => {
+                           // Determine mime type for preview
+                           // If PDF, we generated JPEGs. If Image upload, use original mime.
+                           const srcPrefix = attachment.mimeType === 'application/pdf' ? 'data:image/jpeg;base64,' : `data:${attachment.mimeType};base64,`;
+                           
+                           return (
+                           <div key={idx} className="relative shrink-0 border border-slate-200 rounded-md overflow-hidden shadow-sm group">
+                              <img 
+                                src={`${srcPrefix}${data}`} 
+                                alt={`Page ${idx + 1}`}
+                                className="h-24 w-auto object-contain bg-white"
+                              />
+                              <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-colors pointer-events-none" />
+                              <span className="absolute bottom-1 right-1 bg-black/60 text-white text-[9px] px-1.5 py-0.5 rounded shadow-sm backdrop-blur-[1px]">
+                                {attachment.mimeType === 'application/pdf' ? `P${idx + 1}` : '预览'}
+                              </span>
+                           </div>
+                           );
+                        })}
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-2 flex items-center gap-1.5 px-0.5">
+                         <Check className="w-3 h-3 text-green-500" />
+                         已提取 {attachment.visualData.length} 页内容用于多模态分析
+                      </p>
+                   </div>
+                )}
               </div>
             )}
 
@@ -547,14 +830,14 @@ export default function App() {
                    type="file" 
                    ref={fileInputRef}
                    onChange={handleFileUpload}
-                   accept=".pdf,.docx,.jpg,.jpeg,.png,.webp"
+                   accept=".pdf,.docx,.jpg,.jpeg,.png,.webp,.txt,.rtf"
                    className="hidden"
                    disabled={isBusy}
                  />
                  <button
                    onClick={() => fileInputRef.current?.click()}
                    className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-brand-600 hover:bg-white bg-transparent rounded-lg transition-colors border border-transparent hover:border-slate-200 hover:shadow-sm"
-                   title="上传 PDF, Word, 图片"
+                   title="上传 PDF, Word, TXT, RTF, 图片"
                    disabled={isBusy}
                  >
                    <Upload className="w-4 h-4" />
@@ -619,15 +902,25 @@ export default function App() {
                       className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'professional' ? 'bg-purple-100 text-purple-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                     >
                       <Sparkles className="w-3 h-3" />
-                      专业深度
+                      深度
                     </button>
                     <button
-                      onClick={() => setMode('polishing')}
+                      onClick={() => setMode('format')}
                       disabled={isBusy}
-                      className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'polishing' ? 'bg-teal-100 text-teal-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                      className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'format' ? 'bg-slate-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                      title="推荐上传PDF/图片"
                     >
-                      <PenTool className="w-3 h-3" />
-                      润色改写
+                      <LayoutTemplate className="w-3 h-3" />
+                      格式
+                    </button>
+                    <button
+                      onClick={() => setMode('file_scan')}
+                      disabled={isBusy}
+                      className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'file_scan' ? 'bg-cyan-100 text-cyan-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                      title="上传文件直接检测，不提取文字"
+                    >
+                      <FileSearch className="w-3 h-3" />
+                      原文件
                     </button>
                     <button
                       onClick={() => setMode('official')}
@@ -698,7 +991,7 @@ export default function App() {
                 </>
               ) : (
                 <>
-                  {mode === 'sensitive' ? <ShieldAlert className="w-5 h-5"/> : (mode === 'official' ? <FileBadge className="w-5 h-5"/> : (mode === 'polishing' ? <PenTool className="w-5 h-5" /> : <Wand2 className="w-5 h-5" />))}
+                  {mode === 'sensitive' ? <ShieldAlert className="w-5 h-5"/> : (mode === 'official' ? <FileBadge className="w-5 h-5"/> : (mode === 'format' ? <LayoutTemplate className="w-5 h-5" /> : (mode === 'file_scan' ? <FileSearch className="w-5 h-5" /> : (mode === 'polishing' ? <PenTool className="w-5 h-5" /> : <Wand2 className="w-5 h-5" />))))}
                   <span>{getButtonText()}</span>
                 </>
               )}
@@ -733,7 +1026,16 @@ export default function App() {
         <p>© {new Date().getFullYear()} GrammarZen. Powered by Google Gemini.</p>
       </footer>
 
-      {/* Whitelist Modal */}
+      {/* Modals */}
+      <PDFProcessModal 
+        isOpen={showPDFModal}
+        onClose={() => { setShowPDFModal(false); setPendingPDF(null); }}
+        fileName={pendingPDF?.file.name || ''}
+        totalPages={pdfPageCount}
+        pdfDocument={pendingPDF?.doc}
+        onConfirm={handlePDFProcessConfirm}
+      />
+
       {showWhitelistModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 animate-fade-in backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full m-4 overflow-hidden animate-fade-in-up border border-slate-200">
