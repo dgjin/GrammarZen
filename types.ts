@@ -32,4 +32,16 @@ export interface RuleLibrary {
   createdAt: number;
 }
 
+export interface HistoryRecord {
+  id: string;
+  originalText?: string;
+  fileName?: string;
+  fileType?: string;
+  checkMode: string;
+  summary: string;
+  score: number;
+  resultJson: ProofreadResult;
+  createdAt: string; // ISO string from DB
+}
+
 export type LoadingState = 'idle' | 'loading' | 'streaming' | 'success' | 'error';

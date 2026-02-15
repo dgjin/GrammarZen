@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { ProofreadResult, IssueType, Issue } from '../types';
 import { IssueCard } from './IssueCard';
-import { Copy, Check, ThumbsUp, AlertTriangle, FileDiff, Eye, Download, ChevronDown, CheckCheck, ListX, FileText, Maximize2, Minimize2, File as FileIcon, FileImage } from 'lucide-react';
+import { Copy, Check, ThumbsUp, AlertTriangle, FileDiff, Eye, Download, ChevronDown, CheckCheck, ListX, FileText, Maximize2, Minimize2, File as FileIcon, FileImage, MessageSquare, ChevronUp, GripHorizontal } from 'lucide-react';
 import { diffChars, Change } from 'diff';
 import { Attachment } from '../App';
 
@@ -22,6 +22,48 @@ interface RenderPart {
   issueIndex?: number; // Always present if related to an issue
   clickable?: boolean; // Can trigger selection
 }
+
+// Hover Card Component
+const HoverCard: React.FC<{
+  issue: Issue;
+  position: { x: number, y: number };
+  onClose: () => void;
+}> = ({ issue, position, onClose }) => {
+  return (
+    <div 
+      className="absolute z-50 bg-white p-4 rounded-xl shadow-2xl border border-slate-100 w-72 animate-fade-in-up pointer-events-none"
+      style={{ left: position.x, top: position.y }}
+    >
+        <div className="flex items-center gap-2 mb-2">
+           <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide border ${
+               issue.type === IssueType.SENSITIVE ? 'bg-rose-50 text-rose-600 border-rose-100' : 
+               issue.type === IssueType.TYPO ? 'bg-red-50 text-red-600 border-red-100' :
+               'bg-slate-50 text-slate-600 border-slate-100'
+           }`}>
+               {issue.type}
+           </span>
+        </div>
+        
+        <div className="grid grid-cols-[1fr_auto_1fr] gap-2 items-center text-sm mb-3">
+            <div className="bg-red-50 text-red-600 px-2 py-1 rounded text-center line-through decoration-red-300">
+                {issue.original || <span className="opacity-50 italic">无</span>}
+            </div>
+            <span className="text-slate-300">→</span>
+            <div className="bg-green-50 text-green-600 px-2 py-1 rounded text-center font-medium">
+                {issue.suggestion || <span className="opacity-50 italic">删除</span>}
+            </div>
+        </div>
+
+        <div className="text-xs text-slate-500 leading-relaxed bg-slate-50 p-2 rounded border border-slate-100">
+            {issue.reason}
+        </div>
+        
+        {/* Arrow */}
+        <div className="absolute -top-1.5 left-6 w-3 h-3 bg-white border-t border-l border-slate-100 transform rotate-45" />
+    </div>
+  );
+};
+
 
 // Simple throttle hook
 function useThrottle<T extends (...args: any[]) => void>(func: T, delay: number): T {
@@ -45,10 +87,11 @@ function useThrottle<T extends (...args: any[]) => void>(func: T, delay: number)
 
 export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, onAddToWhitelist, attachment }) => {
   const [copied, setCopied] = useState(false);
-  const [viewMode, setViewMode] = useState<'clean' | 'diff'>('clean');
+  const [viewMode, setViewMode] = useState<'clean' | 'annotated'>('annotated');
   const [activeFilter, setActiveFilter] = useState<'all' | IssueType>('all');
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [showAttachment, setShowAttachment] = useState(false);
+  const [isMobileSheetOpen, setIsMobileSheetOpen] = useState(false);
   
   // State for interactive proofreading
   const [resolvedIndices, setResolvedIndices] = useState<Set<number>>(new Set());
@@ -58,6 +101,9 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
   // Highlight State
   const [selectedIssueIndex, setSelectedIssueIndex] = useState<number | null>(null);
   const [selectionSource, setSelectionSource] = useState<'text' | 'list' | null>(null);
+  
+  // Hover State
+  const [hoveredIssue, setHoveredIssue] = useState<{ index: number, x: number, y: number } | null>(null);
 
   // Scroll Refs
   const textContainerRef = useRef<HTMLDivElement>(null);
@@ -71,9 +117,11 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
     setCurrentText(result.correctedText);
     setSelectedIssueIndex(null);
     setSelectionSource(null);
-  }, [result]);
+    if (originalText) {
+        setViewMode('annotated');
+    }
+  }, [result, originalText]);
 
-  // Reset selection on filter change to avoid pointing to hidden issues
   useEffect(() => {
     setSelectedIssueIndex(null);
   }, [activeFilter]);
@@ -81,12 +129,10 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
   // Effect to scroll to highlighted issue in TEXT view
   useEffect(() => {
     if (selectedIssueIndex !== null && selectionSource !== 'text') {
-      // Use querySelector to find element by data attribute
       const el = textContainerRef.current?.querySelector(`[data-issue-id="${selectedIssueIndex}"]`);
       if (el) {
         isAutoScrolling.current = true;
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        // Reset lock after animation approx time
         setTimeout(() => { isAutoScrolling.current = false; }, 800);
       }
     }
@@ -95,17 +141,27 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
   // Effect to scroll to selected issue in LIST view
   useEffect(() => {
     if (selectedIssueIndex !== null && selectionSource === 'text') {
-      const card = document.getElementById(`issue-card-${selectedIssueIndex}`);
-      if (card && listContainerRef.current) {
-        isAutoScrolling.current = true;
-        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        setTimeout(() => { isAutoScrolling.current = false; }, 800);
+      // If on mobile, open sheet first
+      if (window.innerWidth < 1024) { // lg breakpoint
+          setIsMobileSheetOpen(true);
       }
+
+      const card = document.getElementById(`issue-card-${selectedIssueIndex}`);
+      // Slight delay to allow sheet transition
+      setTimeout(() => {
+          if (card && listContainerRef.current) {
+            isAutoScrolling.current = true;
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            setTimeout(() => { isAutoScrolling.current = false; }, 800);
+          }
+      }, 100);
     }
   }, [selectedIssueIndex, selectionSource]);
 
   // --- Filter Logic ---
-  const filteredIssues = useMemo(() => result.issues
+  const filteredIssues = useMemo(() => {
+    const issues = result.issues || [];
+    return issues
     .map((issue, idx) => ({ ...issue, originalIndex: idx }))
     .filter(issue => !resolvedIndices.has(issue.originalIndex))
     .filter(issue => {
@@ -114,12 +170,14 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
           return issue.type === IssueType.STYLE || issue.type === IssueType.SUGGESTION;
         }
         return issue.type === activeFilter;
-    }), [result.issues, resolvedIndices, activeFilter]);
+    });
+  }, [result.issues, resolvedIndices, activeFilter]);
 
   // --- Scroll Handlers ---
 
   const handleTextScroll = useThrottle(() => {
     if (isAutoScrolling.current || !textContainerRef.current) return;
+    setHoveredIssue(null); // Clear hover on scroll
     
     const containerRect = textContainerRef.current.getBoundingClientRect();
     const centerY = containerRect.top + containerRect.height / 2;
@@ -127,13 +185,10 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
     let closestIndex: number | null = null;
     let minDistance = Infinity;
 
-    // Find the issue closest to the center of the view
     filteredIssues.forEach(issue => {
-      // Use querySelector for robustness
       const el = textContainerRef.current?.querySelector(`[data-issue-id="${issue.originalIndex}"]`);
       if (el) {
         const rect = el.getBoundingClientRect();
-        // Only consider elements that are visible or close to visible
         if (rect.bottom > containerRect.top && rect.top < containerRect.bottom) {
              const dist = Math.abs((rect.top + rect.height / 2) - centerY);
              if (dist < minDistance) {
@@ -145,7 +200,7 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
     });
 
     if (closestIndex !== null && closestIndex !== selectedIssueIndex) {
-        setSelectionSource('text'); // Claim source as text
+        setSelectionSource('text');
         setSelectedIssueIndex(closestIndex);
     }
   }, 200);
@@ -174,7 +229,7 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
     });
 
     if (closestIndex !== null && closestIndex !== selectedIssueIndex) {
-        setSelectionSource('list'); // Claim source as list
+        setSelectionSource('list');
         setSelectedIssueIndex(closestIndex);
     }
   }, 200);
@@ -306,7 +361,7 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
     report += `## 校对后文本\n\n${currentText}\n\n`;
     report += `## 问题列表\n\n`;
     
-    const activeIssues = result.issues.filter((_, idx) => !resolvedIndices.has(idx));
+    const activeIssues = (result.issues || []).filter((_, idx) => !resolvedIndices.has(idx));
     
     if (activeIssues.length === 0) {
         report += "未发现明显问题或所有问题已处理。\n";
@@ -373,10 +428,10 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
     }
     if (currentBlock) blocks.push(currentBlock);
     
-    const locations = result.issues.map(() => ({ start: -1, end: -1 }));
+    const locations = (result.issues || []).map(() => ({ start: -1, end: -1 }));
     let blockCursor = 0;
     
-    result.issues.forEach((issue, idx) => {
+    (result.issues || []).forEach((issue, idx) => {
         for (let i = blockCursor; i < blocks.length; i++) {
             const block = blocks[i];
             const origMatch = block.origText.indexOf(issue.original);
@@ -410,7 +465,7 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
       ? diffChars(originalText, currentText) 
       : [{ value: currentText, added: true, removed: false } as Change];
     
-    const issue = selectedIssueIndex !== null ? result.issues[selectedIssueIndex] : null;
+    const issue = selectedIssueIndex !== null && result.issues ? result.issues[selectedIssueIndex] : null;
     const target = selectedIssueIndex !== null ? issueLocations[selectedIssueIndex] : null;
 
     // Helper: find issue respecting FILTER
@@ -553,47 +608,103 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
 
   }, [originalText, currentText, selectedIssueIndex, issueLocations, result, resolvedIndices, activeFilter]);
 
+  // Handle Mouse Hover Event
+  const handleMouseEnter = (e: React.MouseEvent, index: number) => {
+      // Don't show hover card on mobile if sheet is open
+      if (window.innerWidth < 1024) return;
+
+      if (textContainerRef.current) {
+          const rect = e.currentTarget.getBoundingClientRect();
+          const containerRect = textContainerRef.current.getBoundingClientRect();
+          const scrollTop = textContainerRef.current.scrollTop;
+          
+          setHoveredIssue({
+              index: index,
+              // X: Left position relative to container + some padding
+              x: Math.max(0, Math.min(rect.left - containerRect.left, containerRect.width - 300)),
+              // Y: Bottom of element + Scroll Top + Padding
+              y: rect.bottom - containerRect.top + scrollTop + 10
+          });
+      }
+  };
 
   // Render Functions
   const renderProcessedDiffs = () => {
-      // In Clean mode, filter out removed parts but keep parts needed for highlighting added text
-      const partsToRender = viewMode === 'clean' 
-        ? processedDiffs.filter(p => !p.removed)
-        : processedDiffs;
-
-      return partsToRender.map((part, index) => {
-          let baseClass = "text-slate-800";
-          if (part.added) {
-             baseClass = "bg-green-100 text-green-800 decoration-green-400 underline decoration-2 underline-offset-2 mx-0.5 px-0.5 rounded";
-          } else if (part.removed) {
-             baseClass = "bg-red-50 text-red-400 line-through decoration-red-300 mx-0.5 px-0.5 rounded opacity-80";
+      return processedDiffs.map((part, index) => {
+          // 1. Handle Removed Parts
+          if (part.removed) {
+              if (viewMode === 'clean') return null; // Truly hidden in clean mode
+              
+              // In Annotated mode, if it has an issue (deletion), show a marker
+              if (part.issueIndex !== undefined) {
+                  return (
+                      <span 
+                        key={index}
+                        data-issue-id={part.issueIndex}
+                        className="inline-flex items-center justify-center w-4 h-4 mx-0.5 align-middle bg-rose-100 text-rose-600 rounded-sm border border-rose-200 cursor-pointer hover:bg-rose-200 transition-colors text-[10px] font-bold select-none"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectionSource('text');
+                            setSelectedIssueIndex(part.issueIndex ?? null);
+                        }}
+                        onMouseEnter={(e) => handleMouseEnter(e, part.issueIndex!)}
+                        onMouseLeave={() => setHoveredIssue(null)}
+                        title="建议删除"
+                      >
+                          <span className="block w-2 h-0.5 bg-rose-500"></span>
+                      </span>
+                  );
+              }
+              // Normal removed text without issue (diff noise) is hidden in annotated view
+              return null;
           }
 
+          // 2. Handle Added/Unchanged Parts
+          let className = "text-slate-800 transition-colors";
+          const isAnnotatedMode = viewMode === 'annotated';
+          
+          if (part.added) {
+             if (isAnnotatedMode) {
+                 // Underline style
+                 let colorClass = "decoration-brand-400"; // default
+                 if (part.issueIndex !== undefined && result.issues) {
+                     const issue = result.issues[part.issueIndex];
+                     if (issue.type === IssueType.TYPO) colorClass = "decoration-red-400";
+                     if (issue.type === IssueType.SENSITIVE) colorClass = "decoration-rose-500";
+                     if (issue.type === IssueType.STYLE) colorClass = "decoration-purple-400";
+                 }
+                 // Use border-b for better control than decoration
+                 className = `text-slate-900 border-b-2 ${colorClass.replace('decoration-', 'border-')} hover:bg-slate-100/80 cursor-pointer pb-[1px]`;
+             }
+          }
+          
           const highlightClass = part.highlighted 
-            ? "bg-yellow-200 ring-2 ring-yellow-400 text-yellow-900 font-medium z-10 relative shadow-sm"
+            ? "bg-yellow-200 ring-2 ring-yellow-400 text-yellow-900 font-medium z-10 relative shadow-sm rounded px-0.5"
             : "";
           
-          // It is clickable if it has an issueIndex and is not already highlighted (or even if highlighted, maybe we want to allow re-clicking?)
-          // But 'part.clickable' from processedDiffs logic handles distinguishing context from target.
-          // IMPORTANT: If we want scroll to work, we need ID on ALL parts that have issueIndex.
           const hasIssue = part.issueIndex !== undefined;
 
+          // Merge classes
           const finalClass = part.highlighted 
-             ? `${baseClass.replace(/bg-[\w-]+/, '')} ${highlightClass}`
-             : baseClass;
+             ? `${className} ${highlightClass}`
+             : className;
 
           return (
             <span 
               key={index} 
-              // Using data attribute instead of ID to avoid duplicates for split issues
               data-issue-id={hasIssue ? part.issueIndex : undefined}
-              className={`${finalClass} ${hasIssue ? 'cursor-pointer hover:bg-yellow-100' : ''}`}
-              onClick={hasIssue ? (e) => {
+              className={`${finalClass} ${hasIssue && isAnnotatedMode ? 'relative' : ''}`}
+              onClick={hasIssue && isAnnotatedMode ? (e) => {
                   e.stopPropagation();
                   setSelectionSource('text');
                   setSelectedIssueIndex(part.issueIndex ?? null);
               } : undefined}
-              title={hasIssue ? "点击定位到问题" : undefined}
+              onMouseEnter={(e) => {
+                  if (hasIssue && isAnnotatedMode && part.issueIndex !== undefined) {
+                      handleMouseEnter(e, part.issueIndex);
+                  }
+              }}
+              onMouseLeave={() => setHoveredIssue(null)}
             >
               {part.value}
             </span>
@@ -602,7 +713,7 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
   };
 
   // Counts based on UNRESOLVED
-  const currentUnresolved = result.issues.filter((_, idx) => !resolvedIndices.has(idx));
+  const currentUnresolved = (result.issues || []).filter((_, idx) => !resolvedIndices.has(idx));
   const counts = {
     all: currentUnresolved.length,
     [IssueType.SENSITIVE]: currentUnresolved.filter(i => i.type === IssueType.SENSITIVE).length,
@@ -617,7 +728,7 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
   const FilterButton = ({ type, label, count, colorClass }: { type: 'all' | IssueType, label: string, count: number, colorClass: string }) => (
     <button
       onClick={() => setActiveFilter(type)}
-      className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${
+      className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 shrink-0 ${
         activeFilter === type
           ? colorClass
           : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300 hover:text-slate-700'
@@ -636,7 +747,7 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
   const diffCount = currentText.length - (originalText?.length || 0);
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 h-[85vh] min-h-[500px]">
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 h-[85vh] min-h-[500px] relative">
       {/* Left Column: Text Display */}
       <div className={`
           flex flex-col bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden transition-all duration-300
@@ -649,28 +760,29 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
              {!showAttachment && (
                <div className="flex bg-slate-200/50 p-1 rounded-lg">
                   <button
+                  onClick={() => setViewMode('annotated')}
+                  disabled={!canShowDiff}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+                      viewMode === 'annotated' 
+                      ? 'bg-white text-brand-600 shadow-sm' 
+                      : 'text-slate-500 hover:text-slate-700'
+                  } ${!canShowDiff ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  title={!canShowDiff ? "图片/PDF 暂不支持批注模式" : "显示修订批注"}
+                  >
+                  <MessageSquare className="w-4 h-4" />
+                  <span className="hidden sm:inline">批注</span>
+                  </button>
+                  <button
                   onClick={() => setViewMode('clean')}
                   className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
                       viewMode === 'clean' 
                       ? 'bg-white text-brand-600 shadow-sm' 
                       : 'text-slate-500 hover:text-slate-700'
                   }`}
+                  title="查看最终结果"
                   >
                   <Eye className="w-4 h-4" />
-                  阅读
-                  </button>
-                  <button
-                  onClick={() => setViewMode('diff')}
-                  disabled={!canShowDiff}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                      viewMode === 'diff' 
-                      ? 'bg-white text-brand-600 shadow-sm' 
-                      : 'text-slate-500 hover:text-slate-700'
-                  } ${!canShowDiff ? 'opacity-50 cursor-not-allowed' : ''}`}
-                  title={!canShowDiff ? "图片/PDF 暂不支持修订模式" : ""}
-                  >
-                  <FileDiff className="w-4 h-4" />
-                  修订
+                  <span className="hidden sm:inline">预览</span>
                   </button>
               </div>
              )}
@@ -787,6 +899,15 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
           onScroll={handleTextScroll}
           className="flex-1 overflow-y-auto bg-white/50 relative scroll-smooth"
         >
+            {/* Hover Tooltip Overlay */}
+            {hoveredIssue && result.issues && (
+                <HoverCard 
+                    issue={result.issues[hoveredIssue.index]} 
+                    position={hoveredIssue} 
+                    onClose={() => setHoveredIssue(null)}
+                />
+            )}
+
             {showAttachment && attachment ? (
                 <div className="h-full w-full bg-slate-100 flex flex-col items-center p-8 overflow-y-auto">
                     {attachment.visualData && attachment.visualData.length > 0 ? (
@@ -814,37 +935,60 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
                     )}
                 </div>
             ) : (
-                <div className="p-5 text-base leading-relaxed text-slate-800 whitespace-pre-wrap font-sans min-h-full">
+                <div className="p-5 text-base leading-relaxed text-slate-800 whitespace-pre-wrap font-sans min-h-full pb-20 lg:pb-5">
                     {renderProcessedDiffs()}
                 </div>
             )}
         </div>
         
-        {!showAttachment && viewMode === 'diff' && (
-          <div className="px-4 py-2 bg-slate-50 border-t border-slate-100 text-xs flex gap-4 text-slate-500 shrink-0">
-             <span className="flex items-center gap-1"><span className="w-3 h-3 bg-red-100 border border-red-200 rounded-sm block"></span> 删除内容</span>
-             <span className="flex items-center gap-1"><span className="w-3 h-3 bg-green-100 border border-green-200 rounded-sm block"></span> 新增内容</span>
-             <span className="flex items-center gap-1"><span className="w-3 h-3 bg-yellow-200 ring-1 ring-yellow-400 rounded-sm block"></span> 当前选中问题</span>
+        {!showAttachment && viewMode === 'annotated' && (
+          <div className="px-4 py-2 bg-slate-50 border-t border-slate-100 text-xs flex gap-4 text-slate-500 shrink-0 overflow-x-auto">
+             <span className="flex items-center gap-1 shrink-0"><span className="w-4 h-0.5 bg-red-400 block"></span> 错别字</span>
+             <span className="flex items-center gap-1 shrink-0"><span className="w-4 h-0.5 bg-rose-500 block"></span> 敏感合规</span>
+             <span className="flex items-center gap-1 shrink-0"><span className="w-4 h-0.5 bg-brand-400 block"></span> 其他建议</span>
+             <span className="flex items-center gap-1 ml-2 shrink-0"><span className="w-2 h-0.5 bg-rose-500 block"></span><span className="text-[9px] text-slate-400">删除线: 删除建议</span></span>
           </div>
         )}
       </div>
 
-      {/* Right Column: Analysis & Issues */}
-      <div className={`flex flex-col h-full gap-4 overflow-hidden ${isFullScreen ? 'hidden' : ''}`}>
-        <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm shrink-0">
-          <div className="flex items-center justify-between mb-4">
+      {/* Right Column: Analysis & Issues (Responsive Bottom Sheet / Side Panel) */}
+      <div 
+        className={`
+           flex flex-col bg-slate-50 border border-slate-200 lg:border-none lg:bg-transparent overflow-hidden
+           lg:static lg:h-full lg:rounded-xl lg:shadow-none
+           ${isMobileSheetOpen 
+                ? 'fixed inset-x-0 bottom-0 z-50 h-[70vh] rounded-t-2xl shadow-[0_-10px_40px_-15px_rgba(0,0,0,0.3)] transition-transform duration-300 transform translate-y-0' 
+                : 'fixed inset-x-0 bottom-0 z-50 h-[70vh] rounded-t-2xl transition-transform duration-300 transform translate-y-full lg:translate-y-0'
+           }
+           ${isFullScreen ? 'hidden' : ''}
+        `}
+      >
+        {/* Mobile Handle */}
+        <div className="lg:hidden flex justify-center py-2 bg-white border-b border-slate-100 cursor-pointer" onClick={() => setIsMobileSheetOpen(false)}>
+            <div className="w-12 h-1.5 bg-slate-200 rounded-full" />
+        </div>
+
+        {/* Header Area */}
+        <div className="bg-white p-4 rounded-t-none lg:rounded-xl border-b lg:border border-slate-200 lg:shadow-sm shrink-0 flex flex-col gap-3">
+          <div className="flex items-center justify-between">
             <h3 className="font-semibold text-slate-700">质量评估</h3>
-            <div className={`px-3 py-1 rounded-full text-sm font-bold border ${getScoreColor(result.score)}`}>
-              {result.score} 分
-            </div>
+             <div className="flex items-center gap-3">
+                <div className={`px-3 py-1 rounded-full text-sm font-bold border ${getScoreColor(result.score)}`}>
+                    {result.score} 分
+                </div>
+                {/* Mobile Close Button */}
+                <button onClick={() => setIsMobileSheetOpen(false)} className="lg:hidden p-1 rounded-full bg-slate-100 text-slate-500">
+                    <ChevronDown className="w-5 h-5" />
+                </button>
+             </div>
           </div>
-          <p className="text-sm text-slate-600 leading-relaxed">
+          <p className="text-sm text-slate-600 leading-relaxed line-clamp-2 lg:line-clamp-none">
             <span className="font-medium text-slate-900 mr-2">总结:</span>
             {result.summary}
           </p>
         </div>
 
-        <div className="flex flex-col flex-1 bg-slate-50 rounded-xl border border-slate-200 overflow-hidden">
+        <div className="flex flex-col flex-1 lg:mt-4 lg:bg-slate-50 lg:rounded-xl lg:border lg:border-slate-200 overflow-hidden bg-white">
            <div className="p-4 border-b border-slate-200 bg-white shrink-0">
              <div className="flex items-center justify-between mb-3">
                <h3 className="font-semibold text-slate-700 flex items-center gap-2">
@@ -859,7 +1003,8 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
                         title="采纳当前列表中的所有建议"
                     >
                         <CheckCheck className="w-3.5 h-3.5" />
-                        全部采纳
+                        <span className="hidden xl:inline">全部采纳</span>
+                        <span className="xl:hidden">采纳</span>
                     </button>
                     <button
                         onClick={() => handleBatchAction('ignore')}
@@ -867,28 +1012,25 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
                         title="忽略当前列表中的所有问题"
                     >
                         <ListX className="w-3.5 h-3.5" />
-                        全部忽略
+                         <span className="hidden xl:inline">全部忽略</span>
+                         <span className="xl:hidden">忽略</span>
                     </button>
                  </div>
                )}
              </div>
              
-             <div className="flex flex-wrap gap-2">
+             <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
                 <FilterButton type="all" label="全部" count={counts.all} colorClass="bg-slate-800 text-white border-slate-800" />
-                <FilterButton type={IssueType.SENSITIVE} label="合规/敏感" count={counts[IssueType.SENSITIVE]} colorClass="bg-rose-600 text-white border-rose-600" />
-                <FilterButton type={IssueType.PRIVACY} label="隐私安全" count={counts[IssueType.PRIVACY]} colorClass="bg-amber-500 text-white border-amber-500" />
-                <FilterButton type={IssueType.FORMAT} label="格式/字体" count={counts[IssueType.FORMAT]} colorClass="bg-slate-500 text-white border-slate-500" />
+                <FilterButton type={IssueType.SENSITIVE} label="合规" count={counts[IssueType.SENSITIVE]} colorClass="bg-rose-600 text-white border-rose-600" />
                 <FilterButton type={IssueType.TYPO} label="错别字" count={counts[IssueType.TYPO]} colorClass="bg-red-500 text-white border-red-500" />
-                <FilterButton type={IssueType.GRAMMAR} label="语病" count={counts[IssueType.GRAMMAR]} colorClass="bg-orange-500 text-white border-orange-500" />
-                <FilterButton type={IssueType.PUNCTUATION} label="标点" count={counts[IssueType.PUNCTUATION]} colorClass="bg-blue-500 text-white border-blue-500" />
-                <FilterButton type={IssueType.STYLE} label="风格建议" count={counts[IssueType.STYLE]} colorClass="bg-purple-500 text-white border-purple-500" />
+                <FilterButton type={IssueType.STYLE} label="建议" count={counts[IssueType.STYLE]} colorClass="bg-purple-500 text-white border-purple-500" />
              </div>
            </div>
            
            <div 
              ref={listContainerRef}
              onScroll={handleListScroll}
-             className="flex-1 overflow-y-auto p-4 space-y-3 scroll-smooth"
+             className="flex-1 overflow-y-auto p-4 space-y-3 scroll-smooth bg-slate-50"
            >
              {filteredIssues.length === 0 ? (
                <div className="flex flex-col items-center justify-center h-full text-slate-400 py-10">
@@ -916,6 +1058,29 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
            </div>
         </div>
       </div>
+      
+      {/* Mobile Floating Action Button (FAB) to Toggle Sheet */}
+      <div className={`lg:hidden fixed bottom-6 right-6 z-40 transition-transform duration-300 ${isMobileSheetOpen ? 'translate-y-24 opacity-0' : 'translate-y-0 opacity-100'}`}>
+          <button 
+            onClick={() => setIsMobileSheetOpen(true)}
+            className="flex items-center gap-2 bg-slate-900 text-white px-4 py-3 rounded-full shadow-lg hover:bg-slate-800 transition-colors"
+          >
+              <AlertTriangle className="w-5 h-5 text-amber-400" />
+              <span className="font-medium text-sm">问题列表</span>
+              {filteredIssues.length > 0 && (
+                  <span className="bg-red-500 text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold min-w-[1.2rem] text-center">
+                      {filteredIssues.length}
+                  </span>
+              )}
+              <ChevronUp className="w-4 h-4 text-slate-400" />
+          </button>
+      </div>
+
+       {/* Mobile Backdrop */}
+       {isMobileSheetOpen && (
+           <div className="lg:hidden fixed inset-0 bg-black/20 z-40 backdrop-blur-[1px]" onClick={() => setIsMobileSheetOpen(false)} />
+       )}
+
     </div>
   );
 };

@@ -22,86 +22,98 @@ create table public.grammarzen_rule_libraries (
   created_at bigint not null -- 存储时间戳
 );
 
--- 3. 启用行级安全性 (Row Level Security - RLS)
--- 这一步至关重要，确保前端直接访问数据库时，用户只能看到自己的数据
+-- 3. 历史记录表 (grammarzen_history)
+-- 用于存储用户的校对历史记录
+create table public.grammarzen_history (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid not null references auth.users on delete cascade,
+  original_text text, -- 存储原文 (如果是长文本)
+  file_name text,     -- 如果是文件上传
+  file_type text,     -- 文件类型
+  check_mode text,    -- 校对模式
+  summary text,       -- 摘要
+  score integer,      -- 评分
+  result_json jsonb,  -- 完整的 ProofreadResult 对象
+  created_at timestamp with time zone default timezone('utc'::text, now())
+);
+
+-- 4. 启用行级安全性 (Row Level Security - RLS)
 alter table public.grammarzen_user_configs enable row level security;
 alter table public.grammarzen_rule_libraries enable row level security;
+alter table public.grammarzen_history enable row level security;
 
--- 4. 配置 grammarzen_user_configs 表的安全策略 (Policies)
+-- 5. 配置 grammarzen_user_configs 表的安全策略 (Policies)
 
--- 允许用户查询自己的配置
 create policy "Users can select their own config"
   on public.grammarzen_user_configs for select
   using (auth.uid() = user_id);
 
--- 允许用户插入自己的配置 (通常在第一次保存时)
 create policy "Users can insert their own config"
   on public.grammarzen_user_configs for insert
   with check (auth.uid() = user_id);
 
--- 允许用户更新自己的配置
 create policy "Users can update their own config"
   on public.grammarzen_user_configs for update
   using (auth.uid() = user_id);
 
--- 5. 配置 grammarzen_rule_libraries 表的安全策略 (Policies)
+-- 6. 配置 grammarzen_rule_libraries 表的安全策略 (Policies)
 
--- 允许用户查询自己的规则库
 create policy "Users can select their own rules"
   on public.grammarzen_rule_libraries for select
   using (auth.uid() = user_id);
 
--- 允许用户创建新的规则库
 create policy "Users can insert their own rules"
   on public.grammarzen_rule_libraries for insert
   with check (auth.uid() = user_id);
 
--- 允许用户更新自己的规则库
 create policy "Users can update their own rules"
   on public.grammarzen_rule_libraries for update
   using (auth.uid() = user_id);
 
--- 允许用户删除自己的规则库
 create policy "Users can delete their own rules"
   on public.grammarzen_rule_libraries for delete
   using (auth.uid() = user_id);
 
--- 6. (可选) 实时订阅支持
--- 如果需要在前端实时监听数据变化，可以打开 realtime
+-- 7. 配置 grammarzen_history 表的安全策略 (Policies)
+
+create policy "Users can select their own history"
+  on public.grammarzen_history for select
+  using (auth.uid() = user_id);
+
+create policy "Users can insert their own history"
+  on public.grammarzen_history for insert
+  with check (auth.uid() = user_id);
+
+create policy "Users can delete their own history"
+  on public.grammarzen_history for delete
+  using (auth.uid() = user_id);
+
+-- 8. (可选) 实时订阅支持
 begin;
   drop publication if exists supabase_realtime;
   create publication supabase_realtime;
 commit;
 alter publication supabase_realtime add table public.grammarzen_user_configs;
 alter publication supabase_realtime add table public.grammarzen_rule_libraries;
+-- 历史记录通常不需要实时推送到所有客户端，暂不添加
 
--- 7. 配置存储桶 (Storage) - 头像上传
--- 创建一个名为 'avatars' 的公开存储桶
--- 注意：storage schema 是 Supabase 内置的
+-- 9. 配置存储桶 (Storage) - 头像上传
 insert into storage.buckets (id, name, public)
 values ('avatars', 'avatars', true)
 on conflict (id) do nothing;
 
--- 设置存储桶策略 (Policies)
--- 针对 storage.objects 表设置 RLS，确保用户只能上传/修改自己的文件
-
--- 策略 7.1: 允许所有人读取 avatars 桶中的文件 (公开访问)
 create policy "Avatar images are publicly accessible"
   on storage.objects for select
   using ( bucket_id = 'avatars' );
 
--- 策略 7.2: 允许已登录用户上传文件到 avatars 桶
--- Supabase Storage 会自动将 owner 字段设置为当前用户的 UUID
 create policy "Authenticated users can upload avatars"
   on storage.objects for insert
   with check ( bucket_id = 'avatars' and auth.role() = 'authenticated' );
 
--- 策略 7.3: 允许用户更新自己的文件 (owner = auth.uid())
 create policy "Users can update their own avatars"
   on storage.objects for update
   using ( bucket_id = 'avatars' and auth.uid() = owner );
 
--- 策略 7.4: 允许用户删除自己的文件
 create policy "Users can delete their own avatars"
   on storage.objects for delete
   using ( bucket_id = 'avatars' and auth.uid() = owner );

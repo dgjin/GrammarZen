@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import mammoth from 'mammoth';
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
 import { checkChineseText, Part, CheckMode } from './services/geminiService';
-import { ProofreadResult, LoadingState, RuleLibrary } from './types';
+import { ProofreadResult, LoadingState, RuleLibrary, HistoryRecord } from './types';
 import { ResultView } from './components/ResultView';
 import { RuleManagerModal } from './components/RuleManagerModal';
 import { SensitiveWordsModal } from './components/SensitiveWordsModal';
@@ -10,13 +10,15 @@ import { PDFProcessModal } from './components/PDFProcessModal';
 import { HelpModal } from './components/HelpModal';
 import { AuthModal } from './components/AuthModal';
 import { UserProfileModal } from './components/UserProfileModal';
+import { PolishingModal } from './components/PolishingModal';
+import { HistoryModal } from './components/HistoryModal';
 import { 
   Wand2, Eraser, AlertCircle, BookOpenCheck, Upload, FileText, X, FileImage, 
   FileType, Sparkles, Zap, ShieldCheck, Trash2, Book, ShieldAlert, Cpu, 
   ChevronDown, FileBadge, PenTool, LayoutTemplate, Check, Loader2, FileSearch, 
-  HelpCircle, MessageSquarePlus, LogIn, LogOut, User, GraduationCap, Briefcase, Palette, Coffee, Layers
+  HelpCircle, MessageSquarePlus, LogIn, LogOut, User, GraduationCap, Briefcase, Palette, Coffee, Layers, History
 } from 'lucide-react';
-import { supabase, loadUserConfig, loadRuleLibraries, saveWhitelist, saveSensitiveWords, addRuleLibrary, deleteRuleLibrary } from './services/supabaseService';
+import { supabase, loadUserConfig, loadRuleLibraries, saveWhitelist, saveSensitiveWords, addRuleLibrary, deleteRuleLibrary, saveHistoryRecord } from './services/supabaseService';
 
 // Configure PDF.js worker
 GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs`;
@@ -97,9 +99,14 @@ export default function App() {
   const [ruleLibraries, setRuleLibraries] = useState<RuleLibrary[]>([]);
   const [selectedLibIds, setSelectedLibIds] = useState<Set<string>>(new Set());
   const [showRuleManager, setShowRuleManager] = useState(false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
   
   // Help Modal State
   const [showHelpModal, setShowHelpModal] = useState(false);
+
+  // Partial Polishing State
+  const [selection, setSelection] = useState<{ text: string, top: number, left: number, start: number, end: number } | null>(null);
+  const [showPolishingModal, setShowPolishingModal] = useState(false);
   
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -141,6 +148,81 @@ export default function App() {
 
     fetchUserData();
   }, [user]);
+
+  // Handle Selection Logic
+  useEffect(() => {
+    const handleSelectionChange = () => {
+        const activeEl = document.activeElement;
+        // Only handle if textarea is focused
+        if (activeEl !== textareaRef.current) return;
+        
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        
+        if (start !== end) {
+            const selectedStr = textarea.value.substring(start, end);
+            if (selectedStr.trim().length > 0 && !result) { // Don't show if result is displayed
+                 // Selection logic handled in handleMouseUp
+            }
+        } else {
+             setSelection(null);
+        }
+    };
+
+    document.addEventListener('selectionchange', handleSelectionChange);
+    return () => document.removeEventListener('selectionchange', handleSelectionChange);
+  }, [result]);
+
+  const handleMouseUp = (e: React.MouseEvent<HTMLTextAreaElement>) => {
+      const textarea = textareaRef.current;
+      if (!textarea || result) return;
+
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+
+      if (start !== end) {
+          const text = textarea.value.substring(start, end);
+          if (text.trim().length > 0) {
+              const rect = textarea.getBoundingClientRect();
+              const relativeTop = e.clientY - rect.top;
+              const relativeLeft = e.clientX - rect.left;
+
+              setSelection({
+                  text,
+                  top: relativeTop - 40, // Position slightly above cursor
+                  left: relativeLeft,
+                  start,
+                  end
+              });
+          }
+      } else {
+          setSelection(null);
+      }
+  };
+
+  const handleReplaceSelection = (newText: string) => {
+      if (!selection || !textareaRef.current) return;
+      
+      const val = inputText;
+      const before = val.substring(0, selection.start);
+      const after = val.substring(selection.end);
+      
+      const nextVal = before + newText + after;
+      setInputText(nextVal);
+      setSelection(null);
+      
+      // Restore focus
+      setTimeout(() => {
+          if (textareaRef.current) {
+            textareaRef.current.focus();
+            const newCursorPos = selection.start + newText.length;
+            textareaRef.current.setSelectionRange(newCursorPos, newCursorPos);
+          }
+      }, 0);
+  };
 
   const handleLogout = async () => {
     if (supabase) {
@@ -258,6 +340,7 @@ export default function App() {
   const handleCheck = async () => {
     if (!inputText.trim() && !attachment) return;
 
+    setSelection(null); // Clear any selection
     setLoadingState('loading');
     setError(null);
     setResult(null);
@@ -317,11 +400,44 @@ export default function App() {
       );
       setResult(data);
       setLoadingState('success');
+
+      // --- SAVE HISTORY ---
+      if (user) {
+        saveHistoryRecord(user.id, {
+          checkMode: mode,
+          summary: data.summary,
+          score: data.score,
+          originalText: inputText || undefined,
+          fileName: attachment?.name,
+          fileType: attachment?.mimeType,
+          resultJson: data
+        });
+      }
+
     } catch (err: any) {
       console.error(err);
       setError(`校验失败: ${err.message || '服务暂时不可用'}`);
       setLoadingState('error');
     }
+  };
+
+  const handleLoadHistoryRecord = (record: HistoryRecord) => {
+      setLoadingState('success');
+      setInputText(record.originalText || '');
+      setResult(record.resultJson);
+      setMode(record.checkMode as CheckMode);
+      setError(null);
+      // If it was a file, we restore basic info but not full binary content to save bandwidth/complexity
+      if (record.fileName) {
+          setAttachment({
+              name: record.fileName,
+              mimeType: record.fileType || 'application/octet-stream',
+              data: '', // Not restoring full binary
+              size: 0
+          });
+      } else {
+          setAttachment(null);
+      }
   };
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -506,7 +622,7 @@ export default function App() {
 
   const removeAttachment = () => setAttachment(null);
   const loadExample = () => { setInputText(EXAMPLE_TEXT); setAttachment(null); textareaRef.current?.focus(); };
-  const clearInput = () => { setInputText(''); setUserPrompt(''); setAttachment(null); setResult(null); setLoadingState('idle'); setError(null); };
+  const clearInput = () => { setInputText(''); setUserPrompt(''); setAttachment(null); setResult(null); setLoadingState('idle'); setError(null); setSelection(null); };
 
   const getFileIcon = (mimeType: string) => {
     if (mimeType.includes('pdf')) return <FileType className="w-8 h-8 text-red-500" />;
@@ -581,6 +697,17 @@ export default function App() {
                 <Book className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">规则库</span>
             </button>
+            
+            {user && (
+                <button 
+                    onClick={() => setShowHistoryModal(true)} 
+                    className="text-xs text-slate-600 hover:text-brand-600 flex items-center gap-1 transition-colors px-3 py-1.5 rounded-full hover:bg-slate-50 border border-transparent hover:border-slate-200"
+                >
+                    <History className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">历史</span>
+                </button>
+            )}
+
             <button 
                 onClick={() => setShowSensitiveModal(true)} 
                 className="text-xs text-rose-600 hover:text-rose-700 flex items-center gap-1 transition-colors px-3 py-1.5 rounded-full hover:bg-rose-50 border border-transparent hover:border-rose-100"
@@ -722,16 +849,38 @@ export default function App() {
                 )}
               </div>
             )}
-
-            <textarea
-              ref={textareaRef}
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              disabled={isBusy}
-              placeholder={attachment ? "（可选）输入对该文档的校对说明..." : "请输入或粘贴需要校对的中文文本..."}
-              className={`w-full p-5 text-base sm:text-lg leading-relaxed resize-none outline-none text-slate-900 placeholder:text-slate-400 bg-transparent relative z-0 ${attachment ? 'h-32' : 'h-48 sm:h-64'} ${isBusy ? 'opacity-70' : ''} transition-opacity duration-300`}
-              spellCheck={false}
-            />
+            
+            <div className="relative w-full">
+                <textarea
+                  ref={textareaRef}
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  onMouseUp={handleMouseUp}
+                  disabled={isBusy}
+                  placeholder={attachment ? "（可选）输入对该文档的校对说明..." : "请输入或粘贴需要校对的中文文本..."}
+                  className={`w-full p-5 text-base sm:text-lg leading-relaxed resize-none outline-none text-slate-900 placeholder:text-slate-400 bg-transparent relative z-0 ${attachment ? 'h-32' : 'h-48 sm:h-64'} ${isBusy ? 'opacity-70' : ''} transition-opacity duration-300`}
+                  spellCheck={false}
+                />
+                
+                {/* Floating Polish Button */}
+                {selection && (
+                    <div 
+                        className="absolute z-20 animate-fade-in"
+                        style={{ 
+                            top: Math.max(0, selection.top), 
+                            left: Math.min(selection.left, (textareaRef.current?.offsetWidth || 500) - 100) 
+                        }}
+                    >
+                        <button
+                            onClick={() => setShowPolishingModal(true)}
+                            className="flex items-center gap-1.5 bg-teal-600 text-white px-3 py-1.5 rounded-full shadow-lg hover:bg-teal-700 transition-transform hover:scale-105 active:scale-95 text-sm font-medium border border-teal-500/50"
+                        >
+                            <Sparkles className="w-3.5 h-3.5" />
+                            AI 润色此段
+                        </button>
+                    </div>
+                )}
+            </div>
             
             <div className={`bg-slate-50 px-4 py-3 border-t border-slate-100 flex items-center justify-between flex-wrap gap-y-2 relative z-20 ${isBusy ? 'opacity-80 pointer-events-none' : ''}`}>
                <div className="flex items-center gap-2">
@@ -905,6 +1054,14 @@ export default function App() {
       </footer>
 
       {/* Modals */}
+      <PolishingModal 
+         isOpen={showPolishingModal} 
+         onClose={() => setShowPolishingModal(false)}
+         selectedText={selection?.text || ''}
+         modelName={modelName}
+         onReplace={handleReplaceSelection}
+      />
+      
       <PDFProcessModal isOpen={showPDFModal} onClose={() => { setShowPDFModal(false); setPendingPDF(null); }} fileName={pendingPDF?.file.name || ''} totalPages={pdfPageCount} pdfDocument={pendingPDF?.doc} onConfirm={handlePDFProcessConfirm} />
 
       {showWhitelistModal && (
@@ -955,6 +1112,7 @@ export default function App() {
       {/* Auth & Profile Modals */}
       <AuthModal isOpen={showAuthModal} onClose={() => setShowAuthModal(false)} onSuccess={() => setShowAuthModal(false)} />
       <UserProfileModal isOpen={showProfileModal} onClose={() => setShowProfileModal(false)} user={user} onLogout={handleLogout} />
+      {user && <HistoryModal isOpen={showHistoryModal} onClose={() => setShowHistoryModal(false)} userId={user.id} onLoadRecord={handleLoadHistoryRecord} />}
     </div>
   );
 }

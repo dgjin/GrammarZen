@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { RuleLibrary } from '../types';
+import { RuleLibrary, HistoryRecord, ProofreadResult } from '../types';
 
 // Process.env is replaced by Vite at build time. 
 const supabaseUrl = process.env.SUPABASE_URL || '';
@@ -272,4 +272,57 @@ export const deleteRuleLibrary = async (userId: string | undefined, libId: strin
             .eq('user_id', userId);
         if(error) console.error("Cloud delete lib error", error);
     }
+}
+
+// --- History Logic ---
+
+export const saveHistoryRecord = async (userId: string, record: Omit<HistoryRecord, 'id' | 'createdAt'>) => {
+  if (!supabase) return;
+  
+  const payload = {
+    user_id: userId,
+    original_text: record.originalText,
+    file_name: record.fileName,
+    file_type: record.fileType,
+    check_mode: record.checkMode,
+    summary: record.summary,
+    score: record.score,
+    result_json: record.resultJson
+  };
+
+  const { error } = await supabase.from('grammarzen_history').insert(payload);
+  if (error) console.error("Failed to save history:", error);
+};
+
+export const loadHistory = async (userId: string): Promise<HistoryRecord[]> => {
+  if (!supabase) return [];
+  
+  const { data, error } = await supabase
+    .from('grammarzen_history')
+    .select('*')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    console.error("Failed to load history:", error);
+    return [];
+  }
+
+  return data.map((item: any) => ({
+    id: item.id,
+    originalText: item.original_text,
+    fileName: item.file_name,
+    fileType: item.file_type,
+    checkMode: item.check_mode,
+    summary: item.summary,
+    score: item.score,
+    resultJson: item.result_json,
+    createdAt: item.created_at
+  }));
+};
+
+export const deleteHistoryRecord = async (id: string) => {
+    if (!supabase) return;
+    const { error } = await supabase.from('grammarzen_history').delete().eq('id', id);
+    if (error) console.error("Failed to delete history:", error);
 }
