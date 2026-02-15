@@ -26,7 +26,7 @@ interface RenderPart {
 // Simple throttle hook
 function useThrottle<T extends (...args: any[]) => void>(func: T, delay: number): T {
   const lastRun = useRef(0);
-  const timeout = useRef<NodeJS.Timeout | null>(null);
+  const timeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   return useCallback((...args: any[]) => {
     const now = Date.now();
