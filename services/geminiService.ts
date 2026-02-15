@@ -6,7 +6,13 @@ const deepseekApiKey = process.env.DEEPSEEK_API_KEY || '';
 const sparkApiKey = process.env.SPARK_API_KEY || '';
 
 // Initialize Gemini client (only used if Gemini model is selected)
-const googleAI = new GoogleGenAI({ apiKey: geminiApiKey });
+// Prevent crash if API Key is missing during module load
+let googleAI: GoogleGenAI;
+try {
+  googleAI = new GoogleGenAI({ apiKey: geminiApiKey || 'DUMMY_KEY_TO_PREVENT_CRASH' });
+} catch (e) {
+  console.warn("Failed to initialize GoogleGenAI client:", e);
+}
 
 export interface Part {
   text?: string;
@@ -265,6 +271,7 @@ export const checkChineseText = async (
   sensitiveWords: string[] = [],
   customRules: string[] = [],
   userPrompt: string = "",
+  polishingTone: string = "general", // Added tone for polishing
   onUpdate?: (partial: ProofreadResult) => void
 ): Promise<ProofreadResult> => {
 
@@ -341,13 +348,33 @@ export const checkChineseText = async (
       Score 评分应反映公文的规范化程度。
     `;
   } else if (mode === 'polishing') {
+    let toneInstruction = "";
+    switch(polishingTone) {
+        case 'academic':
+            toneInstruction = "【风格要求：学术严谨】\n请使用客观、中立、严谨的学术语言。替换口语化表达，确保术语准确，逻辑推导严密。避免情绪化用词，注重句式的复杂度和精确性。";
+            break;
+        case 'business':
+            toneInstruction = "【风格要求：商务职场】\n请使用简练、专业、高效的商务语言。语气要礼貌但自信，目标导向清晰。去除冗余修饰，使用标准的商务术语，展现专业素养。";
+            break;
+        case 'creative':
+            toneInstruction = "【风格要求：文采创意】\n请使用生动、形象、富有感染力的语言。适当运用修辞手法（排比、比喻等），丰富词汇量，优化句式长短搭配，增强文章的可读性和艺术性。";
+            break;
+        case 'casual':
+            toneInstruction = "【风格要求：口语自然】\n请使用亲切、自然、通俗易懂的语言。将生硬的书面语转化为轻松的口语表达，拉近与读者的距离，适合博客或社交媒体风格。";
+            break;
+        default:
+            toneInstruction = "【风格要求：通用润色】\n提升文采，使用更精准、生动或正式的词汇替换口语化表达。调整句式结构，使阅读节奏更流畅。";
+            break;
+    }
+
     systemInstruction = `
-      你是一名文学功底深厚的资深编辑和改写专家。你的任务是对用户提供的文本进行**润色和改写**，使其更加通顺、优雅、专业。
+      你是一名文学功底深厚的资深编辑和改写专家。你的任务是对用户提供的文本进行**润色和改写**。
+      
+      ${toneInstruction}
       
       目标：
-      1. **提升文采**：使用更精准、生动或正式的词汇替换口语化表达。
-      2. **优化语流**：调整句式结构，使长短句搭配得当，阅读节奏更流畅。
-      3. **保持原意**：可以大幅调整结构和用词，但**绝对不能**改变原文的核心信息和事实。
+      1. **保持原意**：可以大幅调整结构和用词，但**绝对不能**改变原文的核心信息和事实。
+      2. **优化语流**：确保文章读起来朗朗上口，逻辑连贯。
       
       ${whitelistInstruction}
       ${sensitiveWordsInstruction}

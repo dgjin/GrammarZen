@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Zap, Sparkles, ShieldAlert, FileBadge, PenTool, LayoutTemplate, FileSearch, HelpCircle, Book, ShieldCheck, Cpu, Maximize2, Eye, MousePointerClick, RefreshCw, ArrowRightLeft } from 'lucide-react';
+import { X, Zap, Sparkles, ShieldAlert, FileBadge, PenTool, LayoutTemplate, FileSearch, HelpCircle, Book, ShieldCheck, Cpu, Maximize2, Eye, MousePointerClick, RefreshCw, ArrowRightLeft, User, Cloud, Settings } from 'lucide-react';
 
 interface HelpModalProps {
   isOpen: boolean;
@@ -97,7 +97,39 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
             </div>
           </section>
 
-          {/* 4. Core Features (Rules, Sensitive, Whitelist) */}
+          {/* 4. User Account & Data (New) */}
+          <section>
+            <h4 className="text-base font-bold text-slate-800 mb-4 flex items-center gap-2 pb-2 border-b border-slate-100">
+               <User className="w-4 h-4 text-brand-600" />
+               账号与数据
+            </h4>
+            <div className="bg-slate-50 rounded-lg p-4 border border-slate-100 space-y-4">
+                <div className="flex gap-3">
+                    <div className="bg-white p-2 rounded-full shadow-sm border border-slate-100 h-fit">
+                        <Cloud className="w-4 h-4 text-blue-500" />
+                    </div>
+                    <div>
+                        <h5 className="text-sm font-semibold text-slate-700">云端同步</h5>
+                        <p className="text-xs text-slate-600 mt-1">
+                            登录账号后，您配置的<b>白名单</b>、<b>敏感词库</b>和<b>规则库</b>将自动同步到云端数据库。您可以在任何设备上登录并访问一致的配置。未登录时数据仅保存在本地浏览器。
+                        </p>
+                    </div>
+                </div>
+                <div className="flex gap-3">
+                    <div className="bg-white p-2 rounded-full shadow-sm border border-slate-100 h-fit">
+                        <Settings className="w-4 h-4 text-slate-500" />
+                    </div>
+                    <div>
+                        <h5 className="text-sm font-semibold text-slate-700">个人中心</h5>
+                        <p className="text-xs text-slate-600 mt-1">
+                            点击顶部导航栏的头像即可进入个人中心。支持<b>修改昵称</b>、<b>更改登录密码</b>。您还可以点击头像区域<b>上传自定义图片</b>作为头像。
+                        </p>
+                    </div>
+                </div>
+            </div>
+          </section>
+
+          {/* 5. Core Features (Rules, Sensitive, Whitelist) */}
           <section>
             <h4 className="text-base font-bold text-slate-800 mb-4 flex items-center gap-2 pb-2 border-b border-slate-100">
               <ShieldCheck className="w-4 h-4 text-rose-500" />
@@ -140,7 +172,7 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
             </div>
           </section>
 
-          {/* 5. FAQ */}
+          {/* 6. FAQ */}
            <section>
             <h4 className="text-base font-bold text-slate-800 mb-4 flex items-center gap-2 pb-2 border-b border-slate-100">
               <HelpCircle className="w-4 h-4 text-blue-500" />

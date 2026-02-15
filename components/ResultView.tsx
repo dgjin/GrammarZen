@@ -13,7 +13,11 @@ interface ResultViewProps {
 }
 
 // Extended Diff Part with highlight flag
-interface RenderPart extends Change {
+interface RenderPart {
+  value: string;
+  added?: boolean;
+  removed?: boolean;
+  count?: number;
   highlighted?: boolean;
   issueIndex?: number; // Always present if related to an issue
   clickable?: boolean; // Can trigger selection

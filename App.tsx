@@ -8,15 +8,20 @@ import { RuleManagerModal } from './components/RuleManagerModal';
 import { SensitiveWordsModal } from './components/SensitiveWordsModal';
 import { PDFProcessModal } from './components/PDFProcessModal';
 import { HelpModal } from './components/HelpModal';
-import { Wand2, Eraser, AlertCircle, BookOpenCheck, Upload, FileText, X, FileImage, FileType, Sparkles, Zap, ShieldCheck, Trash2, Book, ShieldAlert, Cpu, ChevronDown, FileBadge, PenTool, LayoutTemplate, Check, Loader2, FileSearch, CircleHelp, MessageSquarePlus } from 'lucide-react';
+import { AuthModal } from './components/AuthModal';
+import { UserProfileModal } from './components/UserProfileModal';
+import { 
+  Wand2, Eraser, AlertCircle, BookOpenCheck, Upload, FileText, X, FileImage, 
+  FileType, Sparkles, Zap, ShieldCheck, Trash2, Book, ShieldAlert, Cpu, 
+  ChevronDown, FileBadge, PenTool, LayoutTemplate, Check, Loader2, FileSearch, 
+  HelpCircle, MessageSquarePlus, LogIn, LogOut, User, GraduationCap, Briefcase, Palette, Coffee, Layers
+} from 'lucide-react';
+import { supabase, loadUserConfig, loadRuleLibraries, saveWhitelist, saveSensitiveWords, addRuleLibrary, deleteRuleLibrary } from './services/supabaseService';
 
 // Configure PDF.js worker
 GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs`;
 
 const EXAMPLE_TEXT = "我们的产品质量非常优秀，深受客户们的喜爱。但是，在使用过程中，难免会出现一些小问题。比如，链接不稳定、界面卡顿等等。希望大家能够谅解。我们会竟快修复这些bug，保证给大家一个完美得体验。";
-const WHITELIST_KEY = 'grammarzen_whitelist';
-const SENSITIVE_WORDS_KEY = 'grammarzen_sensitive_words';
-const RULE_LIBS_KEY = 'grammarzen_rule_libs';
 
 export interface Attachment {
   name: string;
@@ -35,13 +40,11 @@ const parseRTF = (rtf: string): string => {
                   .replace(/\\row/g, '\n');
     
     // 2. Remove group blocks that are likely headers/fonts/stylesheets (heuristics)
-    // Removing {\fonttbl ...}, {\colortbl ...}, {\stylesheet ...}
-    // This is a simple non-recursive regex, it might miss nested braces in complex headers but suffices for basic stripping
     text = text.replace(/\{\\fonttbl.*?\}\}/g, '')
                .replace(/\{\\colortbl.*?\}\}/g, '')
                .replace(/\{\\stylesheet.*?\}\}/g, '');
 
-    // 3. Decode hex characters (e.g. \'c4) - Basic Latin-1/Windows-1252 approximation
+    // 3. Decode hex characters
     text = text.replace(/\\'[0-9a-fA-F]{2}/g, (match) => {
         try {
             return String.fromCharCode(parseInt(match.slice(2), 16));
@@ -50,7 +53,7 @@ const parseRTF = (rtf: string): string => {
         }
     });
     
-    // 4. Remove other control words (e.g. \b, \fs20, \cf1, \pard)
+    // 4. Remove other control words
     text = text.replace(/\\([a-z]{1,32})(-?\d{1,10})?[ ]?/g, '');
     
     // 5. Remove remaining braces and cleanup
@@ -71,6 +74,7 @@ export default function App() {
   const [mode, setMode] = useState<CheckMode>('fast');
   const [modelName, setModelName] = useState('gemini-3-flash-preview');
   const [userPrompt, setUserPrompt] = useState('');
+  const [polishingTone, setPolishingTone] = useState<string>('general');
   
   // File Upload State
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -82,15 +86,14 @@ export default function App() {
   const [showPDFModal, setShowPDFModal] = useState(false);
   const [pdfPageCount, setPdfPageCount] = useState(0);
 
-  // Whitelist State
+  // Data & Auth State
+  const [user, setUser] = useState<any>(null);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showProfileModal, setShowProfileModal] = useState(false);
   const [whitelist, setWhitelist] = useState<string[]>([]);
   const [showWhitelistModal, setShowWhitelistModal] = useState(false);
-
-  // Sensitive Words State
   const [sensitiveWords, setSensitiveWords] = useState<string[]>([]);
   const [showSensitiveModal, setShowSensitiveModal] = useState(false);
-
-  // Rule Library State
   const [ruleLibraries, setRuleLibraries] = useState<RuleLibrary[]>([]);
   const [selectedLibIds, setSelectedLibIds] = useState<Set<string>>(new Set());
   const [showRuleManager, setShowRuleManager] = useState(false);
@@ -101,58 +104,71 @@ export default function App() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load persistence on mount
+  // --- Auth & Data Loading ---
+  
+  // Initialize Auth Listener
   useEffect(() => {
-    // Load Whitelist
-    const savedWhitelist = localStorage.getItem(WHITELIST_KEY);
-    if (savedWhitelist) {
-      try {
-        setWhitelist(JSON.parse(savedWhitelist));
-      } catch (e) {
-        console.error("Failed to parse whitelist", e);
-      }
-    }
+    if (!supabase) return;
 
-    // Load Sensitive Words
-    const savedSensitive = localStorage.getItem(SENSITIVE_WORDS_KEY);
-    if (savedSensitive) {
-      try {
-        setSensitiveWords(JSON.parse(savedSensitive));
-      } catch (e) {
-        console.error("Failed to parse sensitive words", e);
-      }
-    }
+    // Check active session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+    });
 
-    // Load Rule Libraries
-    const savedRules = localStorage.getItem(RULE_LIBS_KEY);
-    if (savedRules) {
-        try {
-            setRuleLibraries(JSON.parse(savedRules));
-        } catch (e) {
-            console.error("Failed to parse rule libs", e);
-        }
-    }
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      setUser(session?.user ?? null);
+      if (event === 'USER_UPDATED') {
+          // Force refresh user state to reflect metadata changes
+          setUser(session?.user ?? null);
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
+
+  // Load Data whenever User changes (or on mount for anonymous)
+  useEffect(() => {
+    const fetchUserData = async () => {
+        // Load Config (Whitelist, Sensitive Words)
+        const config = await loadUserConfig(user?.id);
+        setWhitelist(config.whitelist);
+        setSensitiveWords(config.sensitive_words);
+
+        // Load Rules
+        const rules = await loadRuleLibraries(user?.id);
+        setRuleLibraries(rules);
+    };
+
+    fetchUserData();
+  }, [user]);
+
+  const handleLogout = async () => {
+    if (supabase) {
+        await supabase.auth.signOut();
+        setShowProfileModal(false);
+        // State updates handled by onAuthStateChange
+    }
+  };
 
   // --- Whitelist Logic ---
   const handleAddToWhitelist = (word: string) => {
     if (!whitelist.includes(word)) {
       const newWhitelist = [...whitelist, word];
       setWhitelist(newWhitelist);
-      localStorage.setItem(WHITELIST_KEY, JSON.stringify(newWhitelist));
+      saveWhitelist(user?.id, newWhitelist);
     }
   };
 
   const handleRemoveFromWhitelist = (word: string) => {
     const newWhitelist = whitelist.filter(w => w !== word);
     setWhitelist(newWhitelist);
-    localStorage.setItem(WHITELIST_KEY, JSON.stringify(newWhitelist));
+    saveWhitelist(user?.id, newWhitelist);
   };
 
   const clearWhitelist = () => {
       if(window.confirm("确定要清空所有白名单词汇吗？")) {
           setWhitelist([]);
-          localStorage.removeItem(WHITELIST_KEY);
+          saveWhitelist(user?.id, []);
       }
   }
 
@@ -161,20 +177,19 @@ export default function App() {
     if (word && !sensitiveWords.includes(word)) {
       const newList = [...sensitiveWords, word];
       setSensitiveWords(newList);
-      localStorage.setItem(SENSITIVE_WORDS_KEY, JSON.stringify(newList));
+      saveSensitiveWords(user?.id, newList);
     }
   };
 
   const handleRemoveSensitiveWord = (word: string) => {
     const newList = sensitiveWords.filter(w => w !== word);
     setSensitiveWords(newList);
-    localStorage.setItem(SENSITIVE_WORDS_KEY, JSON.stringify(newList));
+    saveSensitiveWords(user?.id, newList);
   };
 
   const clearSensitiveWords = () => {
-    // Confirmation handled in SensitiveWordsModal component
     setSensitiveWords([]);
-    localStorage.removeItem(SENSITIVE_WORDS_KEY);
+    saveSensitiveWords(user?.id, []);
   };
 
   const handleBatchAddSensitiveWords = (newWords: string[]) => {
@@ -188,29 +203,31 @@ export default function App() {
 
     const updatedList = [...sensitiveWords, ...dedupedNewWords];
     setSensitiveWords(updatedList);
-    localStorage.setItem(SENSITIVE_WORDS_KEY, JSON.stringify(updatedList));
+    saveSensitiveWords(user?.id, updatedList);
     alert(`成功导入 ${dedupedNewWords.length} 个新敏感词。`);
   };
 
   // --- Rule Library Logic ---
-  const handleAddLibrary = (library: RuleLibrary) => {
+  const handleAddLibrary = async (library: RuleLibrary) => {
+      // Optimistic update
       const newLibs = [library, ...ruleLibraries];
       setRuleLibraries(newLibs);
-      localStorage.setItem(RULE_LIBS_KEY, JSON.stringify(newLibs));
-      // Auto-select the newly added library
       setSelectedLibIds(prev => new Set(prev).add(library.id));
+      
+      await addRuleLibrary(user?.id, library);
   };
 
-  const handleDeleteLibrary = (id: string) => {
+  const handleDeleteLibrary = async (id: string) => {
       if(window.confirm("确定要删除这个规则库吗？")) {
           const newLibs = ruleLibraries.filter(l => l.id !== id);
           setRuleLibraries(newLibs);
-          localStorage.setItem(RULE_LIBS_KEY, JSON.stringify(newLibs));
           setSelectedLibIds(prev => {
               const newSet = new Set(prev);
               newSet.delete(id);
               return newSet;
           });
+          
+          await deleteRuleLibrary(user?.id, id);
       }
   };
 
@@ -249,86 +266,41 @@ export default function App() {
       let content: string | Part[];
 
       // Decide what to send based on Mode
-      // If Format mode, prioritize sending visual data if available (e.g. PDF rendered image)
       if (mode === 'format' && attachment?.visualData && attachment.visualData.length > 0) {
          content = [
-            {
-               text: inputText || "请分析这些文档图片的排版、字体、间距和格式规范。"
-            },
+            { text: inputText || "请分析这些文档图片的排版、字体、间距和格式规范。" },
             ...attachment.visualData.map(data => ({
-               inlineData: {
-                  mimeType: "image/jpeg",
-                  data: data
-               }
+               inlineData: { mimeType: "image/jpeg", data: data }
             }))
          ];
       } else if (mode === 'file_scan' && attachment && attachment.data) {
-        // Original File Scan Mode: Send the raw file (PDF/Image/Word Base64)
-        
-        // Fix: Gemini does not support DOCX/RTF as inlineData. Must use extracted text.
-        const textOnlyMimes = [
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            'text/plain',
-            'text/rtf',
-            'application/rtf'
-        ];
-
+        const textOnlyMimes = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain', 'text/rtf', 'application/rtf'];
         if (textOnlyMimes.includes(attachment.mimeType)) {
              content = inputText || "（未提取到有效文本）";
         } else {
              content = [
-                {
-                    text: inputText || "请直接分析上传的文件内容，不需要进行 OCR 转换。"
-                },
-                {
-                    inlineData: {
-                    mimeType: attachment.mimeType,
-                    data: attachment.data
-                    }
-                }
+                { text: inputText || "请直接分析上传的文件内容，不需要进行 OCR 转换。" },
+                { inlineData: { mimeType: attachment.mimeType, data: attachment.data } }
              ];
         }
       } else if (attachment && attachment.data) {
-        // Standard File Mode
-        
-        // Fix: Gemini does not support DOCX/RTF as inlineData.
-        const textOnlyMimes = [
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            'text/plain',
-            'text/rtf',
-            'application/rtf'
-        ];
-
+        const textOnlyMimes = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain', 'text/rtf', 'application/rtf'];
         if (textOnlyMimes.includes(attachment.mimeType)) {
-             content = [
-               {
-                 text: inputText || "请校对这份文件内容。"
-               }
-             ];
+             content = [ { text: inputText || "请校对这份文件内容。" } ];
         } else {
              content = [
-               {
-                 text: inputText || "请校对这份文件内容。"
-               },
-               {
-                 inlineData: {
-                   mimeType: attachment.mimeType,
-                   data: attachment.data
-                 }
-               }
+               { text: inputText || "请校对这份文件内容。" },
+               { inlineData: { mimeType: attachment.mimeType, data: attachment.data } }
              ];
         }
       } else {
-        // Text Only Request
         content = inputText;
       }
 
-      // Gather active custom rules
       const activeRules = ruleLibraries
         .filter(lib => selectedLibIds.has(lib.id))
         .flatMap(lib => lib.rules);
 
-      // Pass lists to service
       const data = await checkChineseText(
         content, 
         mode, 
@@ -337,8 +309,8 @@ export default function App() {
         sensitiveWords,
         activeRules,
         userPrompt,
+        polishingTone, // Pass the polishing tone
         (partialResult) => {
-           // On first update, switch to streaming state so ResultView appears
            setLoadingState('streaming');
            setResult(partialResult);
         }
@@ -358,20 +330,17 @@ export default function App() {
 
     const allowedTypes = [
       'application/pdf',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
-      'image/jpeg',
-      'image/png',
-      'image/webp',
-      'text/plain', // .txt
-      'text/rtf', 'application/rtf' // .rtf
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'image/jpeg', 'image/png', 'image/webp',
+      'text/plain', 'text/rtf', 'application/rtf'
     ];
 
-    if (!allowedTypes.includes(file.type) && !file.name.endsWith('.rtf')) { // Simple extension check for RTF if mime varies
+    if (!allowedTypes.includes(file.type) && !file.name.endsWith('.rtf')) { 
       setError("不支持的文件格式。请上传 PDF, Word, TXT, RTF 或图片。");
       return;
     }
 
-    if (file.size > 10 * 1024 * 1024) { // 10MB limit
+    if (file.size > 10 * 1024 * 1024) { 
       setError("文件大小不能超过 10MB。");
       return;
     }
@@ -391,134 +360,79 @@ export default function App() {
       }
     };
 
-    // Read everything as DataURL (Base64) to ensure we always have the raw data for 'Original File' mode
     reader.onload = async (e) => {
       const result = e.target?.result as string;
-      if (!result) {
-         setIsUploading(false);
-         return;
-      }
+      if (!result) { setIsUploading(false); return; }
       
       const base64Data = result.split(',')[1];
 
-      // If generic file type, switch to 'Processing' label during parsing
-      if (file.type !== 'application/pdf') {
-          setProgressLabel('处理');
-      }
+      if (file.type !== 'application/pdf') { setProgressLabel('处理'); }
 
-      // Handle PDF
       if (file.type === 'application/pdf') {
-        // If in 'file_scan' mode, skip text extraction/modal entirely
         if (mode === 'file_scan') {
-           setAttachment({
-              name: file.name,
-              mimeType: file.type,
-              data: base64Data,
-              size: file.size,
-              visualData: []
-           });
-           setInputText(""); // Clear text extraction
+           setAttachment({ name: file.name, mimeType: file.type, data: base64Data, size: file.size, visualData: [] });
+           setInputText("");
            setIsUploading(false);
            if (fileInputRef.current) fileInputRef.current.value = '';
            return;
         }
 
         try {
-            // Convert back to ArrayBuffer for PDF.js
             const arrayBuffer = base64ToArrayBuffer(base64Data);
             const loadingTask = getDocument({ data: arrayBuffer });
             const pdf = await loadingTask.promise;
-            
-            // Set pending state and open modal
-            // We pass base64 here so we don't have to read file again later
             setPendingPDF({ file, doc: pdf, base64: base64Data });
             setPdfPageCount(pdf.numPages);
             setShowPDFModal(true);
-            setIsUploading(false); // Pause uploading UI while waiting for user interaction
+            setIsUploading(false);
             if (fileInputRef.current) fileInputRef.current.value = '';
-            
         } catch (err) {
             console.error("PDF Parsing Error", err);
             setError("PDF 解析失败，请重试或尝试转换为图片上传。");
             setIsUploading(false);
         }
-        return; // Early return, wait for modal
+        return;
       } 
       
-      // Handle Word
       else if (file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
         try {
-          // Convert to ArrayBuffer for Mammoth
           const arrayBuffer = base64ToArrayBuffer(base64Data);
           const mammothResult = await mammoth.extractRawText({ arrayBuffer });
-          
-          // ALWAYS extract text for Word, even in file_scan mode, because Gemini can't process DOCX natively.
           setInputText(mammothResult.value);
-
-          setAttachment({
-            name: file.name,
-            mimeType: file.type,
-            data: base64Data,
-            size: file.size
-          });
-
+          setAttachment({ name: file.name, mimeType: file.type, data: base64Data, size: file.size });
           if (textareaRef.current) textareaRef.current.focus();
         } catch (e) {
           console.error("Word extraction failed", e);
           setError("无法读取 Word 文档，请稍后重试或复制文字粘贴。");
         }
       } 
-      // Handle TXT
       else if (file.type === 'text/plain') {
           try {
              const arrayBuffer = base64ToArrayBuffer(base64Data);
              const textDecoder = new TextDecoder('utf-8');
              const text = textDecoder.decode(arrayBuffer);
              setInputText(text);
-
-             setAttachment({
-                name: file.name,
-                mimeType: file.type,
-                data: base64Data,
-                size: file.size
-             });
+             setAttachment({ name: file.name, mimeType: file.type, data: base64Data, size: file.size });
              if (textareaRef.current) textareaRef.current.focus();
           } catch (e) {
-              console.error("TXT extract failed", e);
               setError("文本文件读取失败。");
           }
       }
-      // Handle RTF
       else if (file.type === 'application/rtf' || file.type === 'text/rtf' || file.name.endsWith('.rtf')) {
           try {
              const arrayBuffer = base64ToArrayBuffer(base64Data);
-             // RTF is mostly ASCII 7-bit, but we decode as UTF-8/ISO safely usually
              const textDecoder = new TextDecoder('utf-8');
              const rtfContent = textDecoder.decode(arrayBuffer);
              const text = parseRTF(rtfContent);
              setInputText(text);
-
-             setAttachment({
-                name: file.name,
-                mimeType: file.type,
-                data: base64Data,
-                size: file.size
-             });
+             setAttachment({ name: file.name, mimeType: file.type, data: base64Data, size: file.size });
              if (textareaRef.current) textareaRef.current.focus();
           } catch (e) {
-              console.error("RTF extract failed", e);
               setError("RTF 文件读取失败。");
           }
       }
-      // Handle Images
       else {
-         setAttachment({
-            name: file.name,
-            mimeType: file.type,
-            data: base64Data,
-            size: file.size,
-            visualData: [base64Data] // Images are their own visual data
-          });
+         setAttachment({ name: file.name, mimeType: file.type, data: base64Data, size: file.size, visualData: [base64Data] });
       }
       
       setIsUploading(false);
@@ -535,12 +449,11 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
-  // Callback from PDF Modal
   const handlePDFProcessConfirm = async (pages: number[], scale: number) => {
     setShowPDFModal(false);
     if (!pendingPDF) return;
     
-    setIsUploading(true); // Show progress again
+    setIsUploading(true);
     setUploadProgress(0);
     setProgressLabel('解析');
 
@@ -549,57 +462,35 @@ export default function App() {
         let extractedText = "";
         const visualImages: string[] = [];
 
-        // Loop through selected pages
         for (let i = 0; i < pages.length; i++) {
             const pageNum = pages[i];
             const page = await doc.getPage(pageNum);
-            
-            // Extract Text
             const textContent = await page.getTextContent();
             const pageText = textContent.items.map((item: any) => item.str).join(' ');
             extractedText += pageText + "\n\n";
 
-            // Extract Visual Data
             try {
                 const viewport = page.getViewport({ scale: scale });
                 const canvas = document.createElement('canvas');
                 const context = canvas.getContext('2d');
                 canvas.height = viewport.height;
                 canvas.width = viewport.width;
-                
                 if (context) {
                     await page.render({ canvasContext: context, viewport } as any).promise;
-                    // Store base64 image without prefix for Gemini
                     visualImages.push(canvas.toDataURL('image/jpeg', 0.8).split(',')[1]);
                 }
             } catch (visualErr) {
                 console.warn(`Failed to render PDF page ${pageNum} to image`, visualErr);
             }
-
-            // Update progress
             setUploadProgress(Math.round(((i + 1) / pages.length) * 100));
         }
 
-        // Determine if text extraction was successful
         if (extractedText.trim().length > 20) {
              setInputText(extractedText);
-             setAttachment({
-                name: file.name,
-                mimeType: file.type,
-                data: base64, // Always store the PDF data now, so we can switch to 'file_scan' mode later if needed
-                size: file.size,
-                visualData: visualImages
-             });
+             setAttachment({ name: file.name, mimeType: file.type, data: base64, size: file.size, visualData: visualImages });
              if (textareaRef.current) textareaRef.current.focus();
         } else {
-             // Scanned PDF fallback
-             setAttachment({
-                name: file.name,
-                mimeType: file.type,
-                data: base64, 
-                size: file.size,
-                visualData: visualImages
-             });
+             setAttachment({ name: file.name, mimeType: file.type, data: base64, size: file.size, visualData: visualImages });
              setError("未能提取有效文本（可能是扫描件），已切换为纯视觉模式。");
         }
 
@@ -613,26 +504,9 @@ export default function App() {
     }
   };
 
-  const removeAttachment = () => {
-    setAttachment(null);
-  };
-
-  const loadExample = () => {
-    setInputText(EXAMPLE_TEXT);
-    setAttachment(null);
-    if (textareaRef.current) {
-      textareaRef.current.focus();
-    }
-  };
-
-  const clearInput = () => {
-    setInputText('');
-    setUserPrompt('');
-    setAttachment(null);
-    setResult(null);
-    setLoadingState('idle');
-    setError(null);
-  };
+  const removeAttachment = () => setAttachment(null);
+  const loadExample = () => { setInputText(EXAMPLE_TEXT); setAttachment(null); textareaRef.current?.focus(); };
+  const clearInput = () => { setInputText(''); setUserPrompt(''); setAttachment(null); setResult(null); setLoadingState('idle'); setError(null); };
 
   const getFileIcon = (mimeType: string) => {
     if (mimeType.includes('pdf')) return <FileType className="w-8 h-8 text-red-500" />;
@@ -642,7 +516,6 @@ export default function App() {
 
   const isBusy = loadingState === 'loading' || loadingState === 'streaming' || isUploading;
 
-  // Determine button text based on mode
   const getButtonText = () => {
     if (loadingState === 'streaming') return '正在生成结果...';
     if (loadingState === 'loading') {
@@ -674,7 +547,6 @@ export default function App() {
       return 'bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400';
   };
 
-  // Character Count
   const charCount = inputText.length;
 
   return (
@@ -698,8 +570,8 @@ export default function App() {
                 onClick={() => setShowHelpModal(true)}
                 className="text-xs text-slate-500 hover:text-brand-600 flex items-center gap-1 transition-colors px-3 py-1.5 rounded-full hover:bg-slate-50 border border-transparent hover:border-slate-200"
             >
-                <CircleHelp className="w-3.5 h-3.5" />
-                帮助
+                <HelpCircle className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">帮助</span>
             </button>
             <div className="w-px h-4 bg-slate-200 mx-1"></div>
             <button
@@ -707,22 +579,56 @@ export default function App() {
                 className="text-xs text-slate-600 hover:text-brand-600 flex items-center gap-1 transition-colors px-3 py-1.5 rounded-full hover:bg-slate-50 border border-transparent hover:border-slate-200"
             >
                 <Book className="w-3.5 h-3.5" />
-                本地规则库
+                <span className="hidden sm:inline">规则库</span>
             </button>
             <button 
                 onClick={() => setShowSensitiveModal(true)} 
                 className="text-xs text-rose-600 hover:text-rose-700 flex items-center gap-1 transition-colors px-3 py-1.5 rounded-full hover:bg-rose-50 border border-transparent hover:border-rose-100"
             >
                 <ShieldAlert className="w-3.5 h-3.5" />
-                敏感词库 <span className="bg-rose-100 text-rose-600 px-1.5 rounded-full text-[10px] ml-0.5">{sensitiveWords.length}</span>
+                <span className="hidden sm:inline">敏感词</span>
+                <span className="bg-rose-100 text-rose-600 px-1.5 rounded-full text-[10px] ml-0.5">{sensitiveWords.length}</span>
             </button>
             <button 
                 onClick={() => setShowWhitelistModal(true)} 
                 className="text-xs text-slate-500 hover:text-brand-600 flex items-center gap-1 transition-colors px-3 py-1.5 rounded-full hover:bg-slate-50 border border-transparent hover:border-slate-200"
             >
                 <ShieldCheck className="w-3.5 h-3.5" />
-                白名单 <span className="bg-slate-100 text-slate-600 px-1.5 rounded-full text-[10px] ml-0.5">{whitelist.length}</span>
+                <span className="hidden sm:inline">白名单</span>
+                <span className="bg-slate-100 text-slate-600 px-1.5 rounded-full text-[10px] ml-0.5">{whitelist.length}</span>
             </button>
+            
+            <div className="w-px h-4 bg-slate-200 mx-1"></div>
+
+            {user ? (
+               <div className="flex items-center gap-2 ml-1">
+                 <button 
+                    onClick={() => setShowProfileModal(true)}
+                    className="flex items-center gap-2 px-2 py-1 rounded-full hover:bg-slate-100 transition-colors group"
+                    title="个人中心"
+                 >
+                    <div className="w-8 h-8 bg-brand-100 text-brand-600 rounded-full flex items-center justify-center font-bold text-xs overflow-hidden border border-transparent group-hover:border-brand-200">
+                        {user.user_metadata?.avatar_url ? (
+                            <img src={user.user_metadata.avatar_url} alt="Avatar" className="w-full h-full object-cover" />
+                        ) : (
+                            user.user_metadata?.nickname?.charAt(0).toUpperCase() || user.email?.charAt(0).toUpperCase()
+                        )}
+                    </div>
+                    <span className="text-xs font-medium text-slate-600 group-hover:text-brand-700 max-w-[80px] truncate hidden sm:block">
+                        {user.user_metadata?.nickname || '用户'}
+                    </span>
+                 </button>
+               </div>
+            ) : (
+                <button
+                    onClick={() => setShowAuthModal(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 text-white rounded-full text-xs font-medium hover:bg-slate-800 transition-all shadow-sm ml-1"
+                >
+                    <LogIn className="w-3.5 h-3.5" />
+                    登录/注册
+                </button>
+            )}
+
           </div>
         </div>
       </header>
@@ -730,7 +636,6 @@ export default function App() {
       {/* Main Content */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
         
-        {/* Intro / Empty State */}
         {loadingState === 'idle' && !result && (
           <div className="text-center max-w-2xl mx-auto mb-10 animate-fade-in-up">
             <h2 className="text-3xl font-bold text-slate-900 mb-4 tracking-tight">
@@ -742,11 +647,9 @@ export default function App() {
           </div>
         )}
 
-        {/* Input Area */}
         <div className={`transition-all duration-700 ease-in-out transform ${result ? 'mb-8 translate-y-0' : 'mb-0'}`}>
           <div className={`bg-white rounded-xl shadow-sm border overflow-hidden relative group focus-within:ring-2 focus-within:ring-brand-500/20 focus-within:border-brand-500 transition-all ${isBusy ? 'border-brand-300 shadow-md ring-2 ring-brand-100' : 'border-slate-200'}`}>
             
-            {/* Upload Progress Overlay */}
             {isUploading && (
               <div className="absolute inset-0 z-30 bg-white/90 backdrop-blur-sm flex flex-col items-center justify-center animate-fade-in">
                  <div className="w-16 h-16 bg-brand-50 rounded-full flex items-center justify-center mb-4 shadow-sm border border-brand-100">
@@ -769,7 +672,6 @@ export default function App() {
               </div>
             )}
 
-            {/* Scanning Animation Overlay (Only show during initial 'loading', hide during 'streaming') */}
             {loadingState === 'loading' && (
               <div className="absolute inset-0 pointer-events-none z-10 rounded-xl overflow-hidden">
                 <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-transparent via-brand-500 to-transparent shadow-[0_0_15px_rgba(14,165,233,0.6)] animate-scan opacity-80"></div>
@@ -777,7 +679,6 @@ export default function App() {
               </div>
             )}
 
-            {/* Attachment Preview Overlay (if any) */}
             {attachment && (
               <div className="mx-5 mt-5 mb-2 bg-slate-50 border border-slate-200 rounded-lg animate-fade-in flex flex-col">
                 <div className="p-3 flex items-center justify-between">
@@ -797,22 +698,14 @@ export default function App() {
                   </button>
                 </div>
 
-                {/* Visual Data Preview */}
                 {attachment.visualData && attachment.visualData.length > 0 && (
                    <div className="px-3 pb-3 overflow-x-auto custom-scrollbar">
                       <div className="flex gap-3">
                         {attachment.visualData.map((data, idx) => {
-                           // Determine mime type for preview
-                           // If PDF, we generated JPEGs. If Image upload, use original mime.
                            const srcPrefix = attachment.mimeType === 'application/pdf' ? 'data:image/jpeg;base64,' : `data:${attachment.mimeType};base64,`;
-                           
                            return (
                            <div key={idx} className="relative shrink-0 border border-slate-200 rounded-md overflow-hidden shadow-sm group">
-                              <img 
-                                src={`${srcPrefix}${data}`} 
-                                alt={`Page ${idx + 1}`}
-                                className="h-24 w-auto object-contain bg-white"
-                              />
+                              <img src={`${srcPrefix}${data}`} alt={`Page ${idx + 1}`} className="h-24 w-auto object-contain bg-white"/>
                               <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-colors pointer-events-none" />
                               <span className="absolute bottom-1 right-1 bg-black/60 text-white text-[9px] px-1.5 py-0.5 rounded shadow-sm backdrop-blur-[1px]">
                                 {attachment.mimeType === 'application/pdf' ? `P${idx + 1}` : '预览'}
@@ -840,17 +733,9 @@ export default function App() {
               spellCheck={false}
             />
             
-            {/* Toolbar inside Textarea */}
             <div className={`bg-slate-50 px-4 py-3 border-t border-slate-100 flex items-center justify-between flex-wrap gap-y-2 relative z-20 ${isBusy ? 'opacity-80 pointer-events-none' : ''}`}>
                <div className="flex items-center gap-2">
-                 <input 
-                   type="file" 
-                   ref={fileInputRef}
-                   onChange={handleFileUpload}
-                   accept=".pdf,.docx,.jpg,.jpeg,.png,.webp,.txt,.rtf"
-                   className="hidden"
-                   disabled={isBusy}
-                 />
+                 <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".pdf,.docx,.jpg,.jpeg,.png,.webp,.txt,.rtf" className="hidden" disabled={isBusy} />
                  <button
                    onClick={() => fileInputRef.current?.click()}
                    className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-brand-600 hover:bg-white bg-transparent rounded-lg transition-colors border border-transparent hover:border-slate-200 hover:shadow-sm"
@@ -903,125 +788,87 @@ export default function App() {
                </div>
 
                <div className="flex items-center gap-4">
-                  {/* Char Count */}
                   <div className="text-xs font-medium text-slate-400 font-mono hidden sm:block">
                      {charCount} 字
                   </div>
 
-                  {/* Mode Toggle */}
                   <div className="flex items-center flex-wrap bg-white border border-slate-200 rounded-lg p-0.5">
-                    <button
-                      onClick={() => setMode('fast')}
-                      disabled={isBusy}
-                      className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'fast' ? 'bg-slate-100 text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                    >
-                      <Zap className="w-3 h-3" />
-                      快速
-                    </button>
-                    <button
-                      onClick={() => setMode('professional')}
-                      disabled={isBusy}
-                      className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'professional' ? 'bg-purple-100 text-purple-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                    >
-                      <Sparkles className="w-3 h-3" />
-                      深度
-                    </button>
-                    <button
-                      onClick={() => setMode('format')}
-                      disabled={isBusy}
-                      className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'format' ? 'bg-slate-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                      title="推荐上传PDF/图片"
-                    >
-                      <LayoutTemplate className="w-3 h-3" />
-                      格式
-                    </button>
-                    <button
-                      onClick={() => setMode('file_scan')}
-                      disabled={isBusy}
-                      className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'file_scan' ? 'bg-cyan-100 text-cyan-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                      title="上传文件直接检测，不提取文字"
-                    >
-                      <FileSearch className="w-3 h-3" />
-                      原文件
-                    </button>
-                    <button
-                      onClick={() => setMode('official')}
-                      disabled={isBusy}
-                      className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'official' ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                    >
-                      <FileBadge className="w-3 h-3" />
-                      公文
-                    </button>
-                    <button
-                      onClick={() => setMode('sensitive')}
-                      disabled={isBusy}
-                      className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'sensitive' ? 'bg-rose-100 text-rose-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                    >
-                      <ShieldAlert className="w-3 h-3" />
-                      合规
-                    </button>
+                    <button onClick={() => setMode('fast')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'fast' ? 'bg-slate-100 text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Zap className="w-3 h-3" />快速</button>
+                    <button onClick={() => setMode('professional')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'professional' ? 'bg-purple-100 text-purple-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Sparkles className="w-3 h-3" />深度</button>
+                    <button onClick={() => setMode('format')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'format' ? 'bg-slate-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`} title="推荐上传PDF/图片"><LayoutTemplate className="w-3 h-3" />格式</button>
+                    <button onClick={() => setMode('file_scan')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'file_scan' ? 'bg-cyan-100 text-cyan-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`} title="上传文件直接检测，不提取文字"><FileSearch className="w-3 h-3" />原文件</button>
+                    <button onClick={() => setMode('official')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'official' ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><FileBadge className="w-3 h-3" />公文</button>
+                    <button onClick={() => setMode('sensitive')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'sensitive' ? 'bg-rose-100 text-rose-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><ShieldAlert className="w-3 h-3" />合规</button>
+                    <button onClick={() => setMode('polishing')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'polishing' ? 'bg-teal-100 text-teal-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><PenTool className="w-3 h-3" />润色</button>
                   </div>
 
                   {(inputText.length > 0 || attachment) && (
-                    <button 
-                      onClick={clearInput}
-                      className="text-slate-400 hover:text-red-500 text-sm flex items-center gap-1 transition-colors"
-                      disabled={isBusy}
-                    >
-                      <Eraser className="w-4 h-4" />
-                      清空
-                    </button>
+                    <button onClick={clearInput} className="text-slate-400 hover:text-red-500 text-sm flex items-center gap-1 transition-colors" disabled={isBusy}><Eraser className="w-4 h-4" />清空</button>
                   )}
                </div>
             </div>
+            
+            {/* Tone Selector for Polishing Mode */}
+            {mode === 'polishing' && (
+              <div className="px-4 py-2 bg-teal-50 border-t border-teal-100 flex items-center gap-3 animate-fade-in">
+                  <span className="text-xs font-medium text-teal-700 flex items-center gap-1">
+                      <Layers className="w-3.5 h-3.5" />
+                      润色风格:
+                  </span>
+                  <div className="flex gap-2">
+                      {[
+                          { id: 'general', label: '通用', icon: null },
+                          { id: 'academic', label: '学术', icon: GraduationCap },
+                          { id: 'business', label: '商务', icon: Briefcase },
+                          { id: 'creative', label: '创意', icon: Palette },
+                          { id: 'casual', label: '口语', icon: Coffee }
+                      ].map(tone => {
+                          const Icon = tone.icon;
+                          const isSelected = polishingTone === tone.id;
+                          return (
+                              <button
+                                  key={tone.id}
+                                  onClick={() => setPolishingTone(tone.id)}
+                                  disabled={isBusy}
+                                  className={`
+                                      flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition-all border
+                                      ${isSelected 
+                                          ? 'bg-white text-teal-700 border-teal-300 shadow-sm' 
+                                          : 'bg-transparent text-teal-600/70 border-transparent hover:bg-teal-100/50 hover:text-teal-800'
+                                      }
+                                  `}
+                              >
+                                  {Icon && <Icon className="w-3 h-3" />}
+                                  {tone.label}
+                              </button>
+                          )
+                      })}
+                  </div>
+              </div>
+            )}
           </div>
 
-          {/* Rules Selection Bar */}
           {ruleLibraries.length > 0 && (
              <div className="mt-3 flex flex-wrap gap-2 items-center animate-fade-in px-1">
-                 <span className="text-xs font-medium text-slate-500 mr-1 flex items-center gap-1">
-                    <Book className="w-3 h-3" />
-                    应用规则:
-                 </span>
+                 <span className="text-xs font-medium text-slate-500 mr-1 flex items-center gap-1"><Book className="w-3 h-3" />应用规则:</span>
                  {ruleLibraries.map(lib => (
-                     <button
-                        key={lib.id}
-                        onClick={() => toggleLibrarySelection(lib.id)}
-                        disabled={isBusy}
-                        className={`text-xs px-2.5 py-1 rounded border transition-all ${selectedLibIds.has(lib.id) ? 'bg-brand-50 border-brand-200 text-brand-700 font-medium' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}
-                     >
-                        {lib.name}
-                     </button>
+                     <button key={lib.id} onClick={() => toggleLibrarySelection(lib.id)} disabled={isBusy} className={`text-xs px-2.5 py-1 rounded border transition-all ${selectedLibIds.has(lib.id) ? 'bg-brand-50 border-brand-200 text-brand-700 font-medium' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}>{lib.name}</button>
                  ))}
              </div>
           )}
 
-          {/* Custom User Prompt Input */}
           <div className="mt-3 px-1 animate-fade-in">
              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <MessageSquarePlus className="h-4 w-4 text-slate-400" />
-                </div>
-                <input
-                  type="text"
-                  value={userPrompt}
-                  onChange={(e) => setUserPrompt(e.target.value)}
-                  disabled={isBusy}
-                  className="block w-full pl-10 pr-3 py-2 border border-slate-200 rounded-lg leading-5 bg-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-brand-500 focus:border-brand-500 sm:text-sm transition-shadow shadow-sm"
-                  placeholder="（可选）输入本次校对的特殊指令，例如：‘语气更正式一点’、‘检查人名是否正确’..."
-                />
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><MessageSquarePlus className="h-4 w-4 text-slate-400" /></div>
+                <input type="text" value={userPrompt} onChange={(e) => setUserPrompt(e.target.value)} disabled={isBusy} className="block w-full pl-10 pr-3 py-2 border border-slate-200 rounded-lg leading-5 bg-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-brand-500 focus:border-brand-500 sm:text-sm transition-shadow shadow-sm" placeholder="（可选）输入本次校对的特殊指令，例如：‘语气更正式一点’、‘检查人名是否正确’..." />
              </div>
           </div>
 
-          {/* Action Button */}
           <div className="mt-4 flex justify-center sm:justify-end">
             <button
               onClick={handleCheck}
               disabled={(!inputText.trim() && !attachment) || isBusy}
-              className={`
-                flex items-center gap-2 px-8 py-3 rounded-full text-white font-medium shadow-lg hover:shadow-xl hover:-translate-y-0.5 transition-all
-                ${getButtonGradient()}
-              `}
+              className={`flex items-center gap-2 px-8 py-3 rounded-full text-white font-medium shadow-lg hover:shadow-xl hover:-translate-y-0.5 transition-all ${getButtonGradient()}`}
             >
               {(loadingState === 'loading' || loadingState === 'streaming') ? (
                 <>
@@ -1038,7 +885,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Error Message */}
         {loadingState === 'error' && (
           <div className="mt-6 p-4 bg-red-50 border border-red-100 rounded-lg flex items-center gap-3 text-red-700 animate-fade-in">
             <AlertCircle className="w-5 h-5 shrink-0" />
@@ -1046,58 +892,32 @@ export default function App() {
           </div>
         )}
 
-        {/* Results Section */}
-        {/* Show result if success OR if streaming (partial results) */}
         {(loadingState === 'success' || loadingState === 'streaming') && result && (
            <div className="mt-8 animate-fade-in-up">
-             <ResultView 
-                result={result} 
-                originalText={inputText} 
-                onAddToWhitelist={handleAddToWhitelist}
-                attachment={attachment}
-             />
+             <ResultView result={result} originalText={inputText} onAddToWhitelist={handleAddToWhitelist} attachment={attachment} />
            </div>
         )}
 
       </main>
 
-      {/* Footer */}
       <footer className="mt-auto py-6 text-center text-slate-400 text-sm">
-        <p>© {new Date().getFullYear()} GrammarZen. Powered by Google Gemini.</p>
+        <p>© {new Date().getFullYear()} GrammarZen. Powered by Google Gemini. 创意设计 dgjin</p>
       </footer>
 
       {/* Modals */}
-      <PDFProcessModal 
-        isOpen={showPDFModal}
-        onClose={() => { setShowPDFModal(false); setPendingPDF(null); }}
-        fileName={pendingPDF?.file.name || ''}
-        totalPages={pdfPageCount}
-        pdfDocument={pendingPDF?.doc}
-        onConfirm={handlePDFProcessConfirm}
-      />
+      <PDFProcessModal isOpen={showPDFModal} onClose={() => { setShowPDFModal(false); setPendingPDF(null); }} fileName={pendingPDF?.file.name || ''} totalPages={pdfPageCount} pdfDocument={pendingPDF?.doc} onConfirm={handlePDFProcessConfirm} />
 
       {showWhitelistModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 animate-fade-in backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full m-4 overflow-hidden animate-fade-in-up border border-slate-200">
             <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-              <h3 className="font-semibold text-lg text-slate-800 flex items-center gap-2">
-                <ShieldCheck className="w-5 h-5 text-brand-600" />
-                白名单管理
-              </h3>
-              <button 
-                onClick={() => setShowWhitelistModal(false)} 
-                className="text-slate-400 hover:text-slate-600 hover:bg-slate-100 p-1 rounded-full transition-all"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <h3 className="font-semibold text-lg text-slate-800 flex items-center gap-2"><ShieldCheck className="w-5 h-5 text-brand-600" />白名单管理</h3>
+              <button onClick={() => setShowWhitelistModal(false)} className="text-slate-400 hover:text-slate-600 hover:bg-slate-100 p-1 rounded-full transition-all"><X className="w-5 h-5" /></button>
             </div>
-            
             <div className="p-6">
               {whitelist.length === 0 ? (
                 <div className="text-center text-slate-500 py-10 flex flex-col items-center">
-                  <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mb-4 text-slate-300">
-                      <ShieldCheck className="w-8 h-8" />
-                  </div>
+                  <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mb-4 text-slate-300"><ShieldCheck className="w-8 h-8" /></div>
                   <p className="font-medium text-slate-700">白名单是空的</p>
                   <p className="text-sm mt-1 text-slate-400 max-w-xs">在校对结果中，点击“忽略并加入白名单”按钮，该词汇就会出现在这里。</p>
                 </div>
@@ -1108,73 +928,33 @@ export default function App() {
                     {whitelist.map((word, index) => (
                         <div key={index} className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 text-slate-700 rounded-lg text-sm border border-slate-200 group hover:border-red-200 hover:bg-red-50 transition-all duration-200">
                         <span className="font-medium">{word}</span>
-                        <button 
-                            onClick={() => handleRemoveFromWhitelist(word)}
-                            className="text-slate-300 group-hover:text-red-500 transition-colors ml-1 p-0.5 rounded-full hover:bg-red-100"
-                            title="移除"
-                        >
-                            <X className="w-3 h-3" />
-                        </button>
+                        <button onClick={() => handleRemoveFromWhitelist(word)} className="text-slate-300 group-hover:text-red-500 transition-colors ml-1 p-0.5 rounded-full hover:bg-red-100" title="移除"><X className="w-3 h-3" /></button>
                         </div>
                     ))}
                     </div>
                 </>
               )}
             </div>
-
             <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex justify-between items-center">
-              <div>
-                  {whitelist.length > 0 && (
-                     <span className="text-xs text-slate-400">共 {whitelist.length} 个词汇</span>
-                  )}
-              </div>
+              <div>{whitelist.length > 0 && (<span className="text-xs text-slate-400">共 {whitelist.length} 个词汇</span>)}</div>
               <div className="flex gap-3">
                 {whitelist.length > 0 && (
-                    <button 
-                        onClick={clearWhitelist} 
-                        className="flex items-center gap-1.5 px-4 py-2 text-red-600 hover:bg-red-50 hover:text-red-700 rounded-lg text-sm font-medium transition-colors border border-transparent hover:border-red-100"
-                    >
-                        <Trash2 className="w-4 h-4" />
-                        清空所有
-                    </button>
+                    <button onClick={clearWhitelist} className="flex items-center gap-1.5 px-4 py-2 text-red-600 hover:bg-red-50 hover:text-red-700 rounded-lg text-sm font-medium transition-colors border border-transparent hover:border-red-100"><Trash2 className="w-4 h-4" />清空所有</button>
                 )}
-                <button 
-                    onClick={() => setShowWhitelistModal(false)}
-                    className="px-5 py-2 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 text-slate-700 rounded-lg text-sm font-medium transition-all shadow-sm"
-                >
-                    完成
-                </button>
+                <button onClick={() => setShowWhitelistModal(false)} className="px-5 py-2 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 text-slate-700 rounded-lg text-sm font-medium transition-all shadow-sm">完成</button>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Sensitive Words Modal */}
-      <SensitiveWordsModal 
-        isOpen={showSensitiveModal}
-        onClose={() => setShowSensitiveModal(false)}
-        words={sensitiveWords}
-        onAdd={handleAddSensitiveWord}
-        onRemove={handleRemoveSensitiveWord}
-        onClear={clearSensitiveWords}
-        onBatchAdd={handleBatchAddSensitiveWords}
-      />
-
-      {/* Rule Manager Modal */}
-      <RuleManagerModal 
-        isOpen={showRuleManager}
-        onClose={() => setShowRuleManager(false)}
-        libraries={ruleLibraries}
-        onAddLibrary={handleAddLibrary}
-        onDeleteLibrary={handleDeleteLibrary}
-      />
-
-      {/* Help Modal */}
-      <HelpModal 
-        isOpen={showHelpModal}
-        onClose={() => setShowHelpModal(false)}
-      />
+      <SensitiveWordsModal isOpen={showSensitiveModal} onClose={() => setShowSensitiveModal(false)} words={sensitiveWords} onAdd={handleAddSensitiveWord} onRemove={handleRemoveSensitiveWord} onClear={clearSensitiveWords} onBatchAdd={handleBatchAddSensitiveWords} />
+      <RuleManagerModal isOpen={showRuleManager} onClose={() => setShowRuleManager(false)} libraries={ruleLibraries} onAddLibrary={handleAddLibrary} onDeleteLibrary={handleDeleteLibrary} />
+      <HelpModal isOpen={showHelpModal} onClose={() => setShowHelpModal(false)} />
+      
+      {/* Auth & Profile Modals */}
+      <AuthModal isOpen={showAuthModal} onClose={() => setShowAuthModal(false)} onSuccess={() => setShowAuthModal(false)} />
+      <UserProfileModal isOpen={showProfileModal} onClose={() => setShowProfileModal(false)} user={user} onLogout={handleLogout} />
     </div>
   );
 }
