@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { RuleLibrary } from '../types';
 import { extractRulesFromText } from '../services/geminiService';
-import { X, Book, Trash2, Plus, Loader2, FileText, Sparkles, BookOpen } from 'lucide-react';
+import { X, Book, Trash2, Loader2, Sparkles, BookOpen } from 'lucide-react';
 
 interface RuleManagerModalProps {
   isOpen: boolean;

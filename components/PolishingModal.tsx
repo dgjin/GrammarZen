@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { X, Sparkles, Check, RefreshCw, Copy, ArrowRight, ArrowLeft } from 'lucide-react';
+import { X, Sparkles, Check, RefreshCw, ArrowRight, Copy } from 'lucide-react';
 import { checkChineseText } from '../services/geminiService';
-import { ProofreadResult } from '../types';
 
 interface PolishingModalProps {
   isOpen: boolean;
@@ -9,6 +8,7 @@ interface PolishingModalProps {
   selectedText: string;
   onReplace: (newText: string) => void;
   modelName: string;
+  initialTone?: string;
 }
 
 export const PolishingModal: React.FC<PolishingModalProps> = ({
@@ -16,21 +16,34 @@ export const PolishingModal: React.FC<PolishingModalProps> = ({
   onClose,
   selectedText,
   onReplace,
-  modelName
+  modelName,
+  initialTone = 'general'
 }) => {
   const [result, setResult] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tone, setTone] = useState<string>(initialTone);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (isOpen && selectedText) {
-      handlePolish();
+      setTone(initialTone);
+      handlePolish(initialTone);
     } else {
         setResult(''); // Reset on close/open
+        setCopied(false);
     }
-  }, [isOpen, selectedText]);
+  }, [isOpen, selectedText, initialTone]);
 
-  const handlePolish = async () => {
+  const handleCopy = () => {
+    if (result) {
+      navigator.clipboard.writeText(result);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handlePolish = async (currentTone: string = tone) => {
     setLoading(true);
     setError(null);
     setResult(''); // Clear previous
@@ -43,7 +56,7 @@ export const PolishingModal: React.FC<PolishingModalProps> = ({
         modelName,
         [], [], [], // No specific rules/whitelist for quick polish
         "请只针对这段文字进行润色，保持原意，使其更通顺优美。",
-        'general',
+        currentTone,
         (partial) => {
             if (partial.correctedText) {
                 setResult(partial.correctedText);
@@ -57,6 +70,11 @@ export const PolishingModal: React.FC<PolishingModalProps> = ({
     }
   };
 
+  const handleToneChange = (newTone: string) => {
+      setTone(newTone);
+      handlePolish(newTone);
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -65,14 +83,35 @@ export const PolishingModal: React.FC<PolishingModalProps> = ({
       <div className="absolute inset-0 bg-black/20 backdrop-blur-sm transition-opacity" onClick={onClose} />
       
       {/* Modal Content */}
-      <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden border border-slate-200 flex flex-col max-h-[80vh] animate-fade-in-up">
+      <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden border border-slate-200 flex flex-col max-h-[80vh] animate-fade-in-up modal-content">
         
         {/* Header */}
         <div className="px-5 py-3 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-          <h3 className="font-semibold text-slate-800 flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-teal-600" />
-            局部润色
-          </h3>
+          <div className="flex items-center gap-4">
+            <h3 className="font-semibold text-slate-800 flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-teal-600" />
+              局部润色
+            </h3>
+            <div className="h-4 w-px bg-slate-200" />
+            <div className="flex gap-1">
+                {[
+                    { id: 'general', label: '通用' },
+                    { id: 'academic', label: '学术' },
+                    { id: 'business', label: '商务' },
+                    { id: 'creative', label: '创意' },
+                    { id: 'casual', label: '口语' }
+                ].map(t => (
+                    <button
+                        key={t.id}
+                        onClick={() => handleToneChange(t.id)}
+                        disabled={loading}
+                        className={`text-[10px] px-2 py-0.5 rounded-full border transition-all ${tone === t.id ? 'bg-teal-600 border-teal-600 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}
+                    >
+                        {t.label}
+                    </button>
+                ))}
+            </div>
+          </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 hover:bg-slate-100 p-1 rounded-full transition-all">
             <X className="w-5 h-5" />
           </button>
@@ -102,10 +141,21 @@ export const PolishingModal: React.FC<PolishingModalProps> = ({
 
             {/* Result */}
             <div className="flex flex-col gap-2 relative">
-                 <span className="text-xs font-bold text-teal-600 uppercase tracking-wider flex items-center gap-2">
-                    润色结果
-                    {loading && <RefreshCw className="w-3 h-3 animate-spin" />}
-                 </span>
+                 <div className="flex justify-between items-center">
+                    <span className="text-xs font-bold text-teal-600 uppercase tracking-wider flex items-center gap-2">
+                        润色结果
+                        {loading && <RefreshCw className="w-3 h-3 animate-spin" />}
+                    </span>
+                    {result && !loading && (
+                        <button 
+                            onClick={handleCopy}
+                            className="text-[10px] flex items-center gap-1 text-slate-400 hover:text-teal-600 transition-colors"
+                        >
+                            {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                            {copied ? '已复制' : '复制'}
+                        </button>
+                    )}
+                 </div>
                  <div className={`p-4 bg-teal-50/50 border border-teal-100 rounded-lg text-slate-800 text-sm leading-relaxed h-full overflow-y-auto max-h-[300px] relative transition-all ${loading ? 'opacity-70' : ''}`}>
                     {error ? (
                         <p className="text-red-500 text-xs">{error}</p>
@@ -119,7 +169,7 @@ export const PolishingModal: React.FC<PolishingModalProps> = ({
         {/* Footer */}
         <div className="px-5 py-4 border-t border-slate-100 bg-white flex justify-between items-center">
            <button 
-             onClick={handlePolish}
+             onClick={() => handlePolish()}
              disabled={loading}
              className="text-slate-500 hover:text-teal-600 text-sm font-medium flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors"
            >

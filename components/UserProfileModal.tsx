@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { supabase, updateUserProfile, uploadUserAvatar } from '../services/supabaseService';
+import { updateUserProfile, uploadUserAvatar } from '../services/supabaseService';
 import { X, User, Lock, Mail, Camera, Loader2, LogOut, Save, CheckCircle, Upload } from 'lucide-react';
 
 interface UserProfileModalProps {

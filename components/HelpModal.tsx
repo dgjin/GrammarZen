@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Zap, Sparkles, ShieldAlert, FileBadge, PenTool, LayoutTemplate, FileSearch, HelpCircle, Book, ShieldCheck, Cpu, Maximize2, Eye, MousePointerClick, RefreshCw, ArrowRightLeft, User, Cloud, Settings } from 'lucide-react';
+import { X, Zap, Sparkles, ShieldAlert, FileBadge, PenTool, LayoutTemplate, FileSearch, HelpCircle, Book, ShieldCheck, Cpu, Maximize2, ArrowRightLeft, User, Cloud, Settings } from 'lucide-react';
 
 interface HelpModalProps {
   isOpen: boolean;

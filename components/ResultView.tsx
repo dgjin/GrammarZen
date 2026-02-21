@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { ProofreadResult, IssueType, Issue } from '../types';
 import { IssueCard } from './IssueCard';
-import { Copy, Check, ThumbsUp, AlertTriangle, FileDiff, Eye, Download, ChevronDown, CheckCheck, ListX, FileText, Maximize2, Minimize2, File as FileIcon, FileImage, MessageSquare, ChevronUp, GripHorizontal } from 'lucide-react';
+import { Copy, Check, ThumbsUp, AlertTriangle, Eye, Download, ChevronDown, CheckCheck, ListX, FileText, Maximize2, Minimize2, File as FileIcon, FileImage, MessageSquare, ChevronUp } from 'lucide-react';
 import { diffChars, Change } from 'diff';
 import { Attachment } from '../App';
 
@@ -27,8 +27,7 @@ interface RenderPart {
 const HoverCard: React.FC<{
   issue: Issue;
   position: { x: number, y: number };
-  onClose: () => void;
-}> = ({ issue, position, onClose }) => {
+}> = ({ issue, position }) => {
   return (
     <div 
       className="absolute z-50 bg-white p-4 rounded-xl shadow-2xl border border-slate-100 w-72 animate-fade-in-up pointer-events-none"
@@ -904,7 +903,6 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
                 <HoverCard 
                     issue={result.issues[hoveredIssue.index]} 
                     position={hoveredIssue} 
-                    onClose={() => setHoveredIssue(null)}
                 />
             )}
 

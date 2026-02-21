@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X, FileText, Layers, Image as ImageIcon, CheckSquare, Square, MousePointerClick, Eye, RefreshCw, ChevronLeft, ChevronRight, Maximize, Minimize } from 'lucide-react';
+import { X, FileText, Layers, CheckSquare, Square, MousePointerClick, RefreshCw, ChevronLeft, ChevronRight, Maximize, Minimize } from 'lucide-react';
 
 interface PDFProcessModalProps {
   isOpen: boolean;

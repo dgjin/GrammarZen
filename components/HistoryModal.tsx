@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { HistoryRecord } from '../types';
 import { loadHistory, deleteHistoryRecord } from '../services/supabaseService';
-import { X, History, Trash2, Eye, Calendar, FileText, Loader2, Search, FileType } from 'lucide-react';
+import { X, History, Trash2, Eye, Calendar, Loader2, FileType } from 'lucide-react';
 
 interface HistoryModalProps {
   isOpen: boolean;

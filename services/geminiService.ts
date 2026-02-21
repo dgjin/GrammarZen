@@ -374,15 +374,31 @@ export const checkChineseText = async (
       违反规范请标记为 'style' (规范) 或 'sensitive' (政治)。
     `;
   } else if (mode === 'polishing') {
-    // ... (Existing polishing logic, kept concise here for brevity, assuming standard prompt logic)
+    const toneMap: Record<string, string> = {
+      'academic': '学术严谨、客观中立',
+      'business': '商务专业、得体大方',
+      'creative': '富有创意、生动形象',
+      'casual': '亲切随和、口语化',
+      'general': '优美流畅、自然大方'
+    };
+    const toneDesc = toneMap[polishingTone] || toneMap['general'];
+
     systemInstruction = `
-      你是一名资深编辑。任务是**润色和改写**。
+      你是一名资深编辑和文案专家。你的任务是**润色和改写**用户提供的文本。
+      
+      【润色目标】
+      1. **提升文采**：优化词汇选择，使表达更精准、丰富。
+      2. **优化句式**：改善句子结构，使逻辑更清晰，读起来更顺畅。
+      3. **保持原意**：在不改变作者初衷的前提下进行优化。
+      4. **风格对齐**：当前要求的润色风格是【${toneDesc}】。
+      
       ${whitelistInstruction}
       
-      风格：${polishingTone === 'academic' ? '学术严谨' : (polishingTone === 'business' ? '商务专业' : '优美流畅')}。
-      目标：保持原意，提升文采，优化句式。
-      
-      请记录所有修改为 'suggestion' 或 'style'。correctedText 为最终润色版本。
+      【输出要求】
+      1. **correctedText**：必须包含完整的润色后的文本。
+      2. **issues**：记录主要的修改点。类型标记为 'suggestion' 或 'style'。
+      3. **summary**：简要说明润色的重点。
+      4. **score**：对原稿质量的评分（0-100）。
     `;
   } else if (mode === 'format') {
      systemInstruction = `
@@ -486,7 +502,22 @@ export const checkChineseText = async (
           cleanJson = cleanJson.substring(firstBrace, lastBrace + 1);
       }
 
-      rawResult = JSON.parse(cleanJson) as ProofreadResult;
+      try {
+        rawResult = JSON.parse(cleanJson) as ProofreadResult;
+      } catch (e) {
+        console.warn("Gemini JSON Parse Error (Recovering):", e);
+        const partial = parsePartialJson(fullText);
+        if (partial.correctedText) {
+           rawResult = {
+             correctedText: partial.correctedText,
+             issues: partial.issues || [],
+             summary: partial.summary || "分析完成（部分数据可能丢失）",
+             score: partial.score || 80
+           } as ProofreadResult;
+        } else {
+           throw new Error("模型返回的不是有效的 JSON 格式");
+        }
+      }
     } catch (error) {
       console.error("Gemini API Error:", error);
       throw error;

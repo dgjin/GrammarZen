@@ -16,7 +16,7 @@ import {
   Wand2, Eraser, AlertCircle, BookOpenCheck, Upload, FileText, X, FileImage, 
   FileType, Sparkles, Zap, ShieldCheck, Trash2, Book, ShieldAlert, Cpu, 
   ChevronDown, FileBadge, PenTool, LayoutTemplate, Check, Loader2, FileSearch, 
-  HelpCircle, MessageSquarePlus, LogIn, LogOut, User, GraduationCap, Briefcase, Palette, Coffee, Layers, History
+  HelpCircle, MessageSquarePlus, LogIn, GraduationCap, Briefcase, Palette, Coffee, Layers, History
 } from 'lucide-react';
 import { supabase, loadUserConfig, loadRuleLibraries, saveWhitelist, saveSensitiveWords, addRuleLibrary, deleteRuleLibrary, saveHistoryRecord } from './services/supabaseService';
 
@@ -153,21 +153,26 @@ export default function App() {
   useEffect(() => {
     const handleSelectionChange = () => {
         const activeEl = document.activeElement;
-        // Only handle if textarea is focused
-        if (activeEl !== textareaRef.current) return;
         
+        // If we are clicking a button or modal, don't clear selection yet
+        if (activeEl && (activeEl.closest('.polishing-trigger') || activeEl.closest('.modal-content'))) {
+            return;
+        }
+
         const textarea = textareaRef.current;
         if (!textarea) return;
+
+        // If textarea is not focused, we might want to clear selection 
+        // but only if we are not interacting with the polish button
+        if (activeEl !== textarea) {
+            // We'll let handleMouseUp and other interactions handle this
+            return;
+        }
 
         const start = textarea.selectionStart;
         const end = textarea.selectionEnd;
         
-        if (start !== end) {
-            const selectedStr = textarea.value.substring(start, end);
-            if (selectedStr.trim().length > 0 && !result) { // Don't show if result is displayed
-                 // Selection logic handled in handleMouseUp
-            }
-        } else {
+        if (start === end) {
              setSelection(null);
         }
     };
@@ -865,13 +870,14 @@ export default function App() {
                 {/* Floating Polish Button */}
                 {selection && (
                     <div 
-                        className="absolute z-20 animate-fade-in"
+                        className="absolute z-20 animate-fade-in polishing-trigger"
                         style={{ 
                             top: Math.max(0, selection.top), 
                             left: Math.min(selection.left, (textareaRef.current?.offsetWidth || 500) - 100) 
                         }}
                     >
                         <button
+                            onMouseDown={(e) => e.preventDefault()}
                             onClick={() => setShowPolishingModal(true)}
                             className="flex items-center gap-1.5 bg-teal-600 text-white px-3 py-1.5 rounded-full shadow-lg hover:bg-teal-700 transition-transform hover:scale-105 active:scale-95 text-sm font-medium border border-teal-500/50"
                         >
@@ -1059,6 +1065,7 @@ export default function App() {
          onClose={() => setShowPolishingModal(false)}
          selectedText={selection?.text || ''}
          modelName={modelName}
+         initialTone={polishingTone}
          onReplace={handleReplaceSelection}
       />
       

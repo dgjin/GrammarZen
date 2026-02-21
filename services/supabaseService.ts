@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
-import { RuleLibrary, HistoryRecord, ProofreadResult } from '../types';
+import { RuleLibrary, HistoryRecord } from '../types';
 
 // Process.env is replaced by Vite at build time. 
 const supabaseUrl = process.env.SUPABASE_URL || '';
