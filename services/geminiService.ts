@@ -4,6 +4,7 @@ import { ProofreadResult, IssueType, Issue } from "../types";
 const geminiApiKey = process.env.API_KEY || '';
 const deepseekApiKey = process.env.DEEPSEEK_API_KEY || '';
 const sparkApiKey = process.env.SPARK_API_KEY || '';
+const kimiApiKey = process.env.KIMI_API_KEY || '';
 
 // Initialize Gemini client (only used if Gemini model is selected)
 // Prevent crash if API Key is missing during module load
@@ -547,6 +548,17 @@ export const checkChineseText = async (
       'https://spark-api-open.xf-yun.com/v1/chat/completions',
       sparkApiKey,
       sparkModelVersion,
+      systemInstruction,
+      content,
+      onUpdate
+    );
+  }
+  else if (modelName.startsWith('moonshot')) {
+    if (!kimiApiKey) throw new Error("未配置 Kimi (Moonshot) API Key");
+    rawResult = await callOpenAICompatibleStream(
+      'https://api.moonshot.cn/v1/chat/completions',
+      kimiApiKey,
+      modelName,
       systemInstruction,
       content,
       onUpdate

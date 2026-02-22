@@ -926,6 +926,11 @@ export default function App() {
                                 <option value="spark-pro">星火 Spark Pro (V3.0)</option>
                                 <option value="spark-lite">星火 Spark Lite</option>
                               </optgroup>
+                              <optgroup label="Moonshot Kimi (需配置 Key)">
+                                <option value="moonshot-v1-8k">Kimi moonshot-v1-8k</option>
+                                <option value="moonshot-v1-32k">Kimi moonshot-v1-32k</option>
+                                <option value="moonshot-v1-128k">Kimi moonshot-v1-128k</option>
+                              </optgroup>
                           </select>
                           <ChevronDown className="w-3 h-3 text-slate-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none" />
                       </div>
