@@ -35,29 +35,48 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
         if (error) throw error;
         alert("登录成功！");
       } else {
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-        });
-        if (error) throw error;
-        
-        // 场景 1: Supabase 后台已关闭 "Confirm email" (推荐本地部署使用)
-        if (data.user && data.session) {
-          await initializeUserConfig(data.user.id);
-          alert("注册成功并已自动登录！");
-        } 
-        // 场景 2: Supabase 后台开启了 "Confirm email" (默认设置)
-        else if (data.user && !data.session) {
-          alert("注册成功！\n\n注意：未检测到自动登录会话。\n请前往 Supabase 后台 (Authentication -> Providers -> Email) 关闭 'Confirm email' 选项以跳过邮箱验证，或者前往邮箱点击激活链接。");
-          // 此时不关闭模态框，让用户看清提示
-          setLoading(false);
-          return; 
+        try {
+          const { data, error } = await supabase.auth.signUp({
+            email,
+            password,
+          });
+          if (error) throw error;
+          
+          // 场景 1: Supabase 后台已关闭 "Confirm email" (推荐本地部署使用)
+          if (data.user && data.session) {
+            try {
+              await initializeUserConfig(data.user.id);
+            } catch (initError) {
+              console.error("初始化用户配置失败:", initError);
+              // 初始化失败不影响注册流程
+            }
+            alert("注册成功并已自动登录！");
+          } 
+          // 场景 2: Supabase 后台开启了 "Confirm email" (默认设置)
+          else if (data.user && !data.session) {
+            alert("注册成功！\n\n注意：未检测到自动登录会话。\n请前往 Supabase 后台 (Authentication -> Providers -> Email) 关闭 'Confirm email' 选项以跳过邮箱验证，或者前往邮箱点击激活链接。");
+            // 此时不关闭模态框，让用户看清提示
+            setLoading(false);
+            return; 
+          }
+        } catch (authError: any) {
+          console.error("Supabase 认证错误:", authError);
+          // 即使 Supabase 认证失败，也允许用户进入应用（使用本地存储模式）
+          if (authError.status === 500 || authError.message.includes("Database error")) {
+            alert("注意：Supabase 服务暂时不可用，但您仍然可以使用应用的基本功能。");
+            onSuccess();
+            onClose();
+            return;
+          } else {
+            throw authError;
+          }
         }
       }
       onSuccess();
       onClose();
     } catch (err: any) {
-      setError(err.message || '操作失败，请重试');
+      console.error("Auth Error:", err);
+      setError(`操作失败: ${err.message || '未知错误'}\n\n详细信息: ${JSON.stringify(err)}`);
     } finally {
       setLoading(false);
     }

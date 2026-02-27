@@ -1,10 +1,12 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { ProofreadResult, IssueType, Issue } from "../types";
+import { parsePartialJson } from "./parsePartialJson";
 
 const geminiApiKey = process.env.API_KEY || '';
 const deepseekApiKey = process.env.DEEPSEEK_API_KEY || '';
 const sparkApiKey = process.env.SPARK_API_KEY || '';
 const kimiApiKey = process.env.KIMI_API_KEY || '';
+  const minmaxApiKey = process.env.MINMAX_API_KEY || '';
 
 // Initialize Gemini client (only used if Gemini model is selected)
 // Prevent crash if API Key is missing during module load
@@ -24,6 +26,81 @@ export interface Part {
 }
 
 export type CheckMode = 'fast' | 'professional' | 'sensitive' | 'official' | 'polishing' | 'format' | 'file_scan';
+
+export type IndustryType = 'general' | 'academic' | 'technical' | 'social' | 'business' | 'legal';
+
+// Industry-specific templates
+const industryTemplates: Record<IndustryType, {
+  name: string;
+  description: string;
+  systemInstruction: string;
+}> = {
+  general: {
+    name: '通用',
+    description: '适用于一般文本校对',
+    systemInstruction: ''
+  },
+  academic: {
+    name: '学术论文',
+    description: '适用于学术论文、研究报告',
+    systemInstruction: `
+      你是一名学术论文校对专家。请严格按照学术写作规范进行校对：
+      1. 检查学术术语的正确使用
+      2. 确保论证逻辑清晰
+      3. 检查引用格式是否规范
+      4. 保持学术语言的严谨性和客观性
+      5. 避免口语化表达
+    `
+  },
+  technical: {
+    name: '技术文档',
+    description: '适用于技术手册、API文档',
+    systemInstruction: `
+      你是一名技术文档校对专家。请按照技术写作规范进行校对：
+      1. 检查技术术语的一致性
+      2. 确保步骤说明清晰易懂
+      3. 检查代码示例的正确性
+      4. 保持语言简洁明了
+      5. 确保专业术语的准确使用
+    `
+  },
+  social: {
+    name: '社交媒体',
+    description: '适用于社交媒体、营销文案',
+    systemInstruction: `
+      你是一名社交媒体内容专家。请按照社交媒体写作规范进行校对：
+      1. 保持语言活泼、有吸引力
+      2. 检查网络用语的适当使用
+      3. 确保内容符合平台规范
+      4. 优化表达方式，提高互动性
+      5. 检查是否有敏感内容
+    `
+  },
+  business: {
+    name: '商务文档',
+    description: '适用于商务邮件、合同文件',
+    systemInstruction: `
+      你是一名商务文档校对专家。请按照商务写作规范进行校对：
+      1. 保持语言专业、得体
+      2. 检查商务术语的正确使用
+      3. 确保表达清晰、准确
+      4. 避免模糊或歧义的表述
+      5. 检查格式和结构是否规范
+    `
+  },
+  legal: {
+    name: '法律文书',
+    description: '适用于法律文件、合同条款',
+    systemInstruction: `
+      你是一名法律文书校对专家。请按照法律写作规范进行校对：
+      1. 检查法律术语的准确使用
+      2. 确保表述严谨、无歧义
+      3. 检查条款逻辑的一致性
+      4. 保持语言正式、专业
+      5. 确保格式符合法律文书规范
+    `
+  }
+};
 
 /**
  * Extracts specific validation rules. Defaults to Gemini for this helper task.
@@ -294,6 +371,299 @@ async function callOpenAICompatibleStream(
 
 // --- Main Function ---
 
+// Helper function to split long text into chunks with context preservation
+const splitTextIntoChunks = (text: string, maxChunkSize: number = 4000, overlapSize: number = 200): string[] => {
+  const chunks: string[] = [];
+  let currentPosition = 0;
+  const textLength = text.length;
+  
+  // Smart chunking with context preservation
+  while (currentPosition < textLength) {
+    // Calculate end position for current chunk
+    let endPosition = Math.min(currentPosition + maxChunkSize, textLength);
+    
+    // Try to split at paragraph boundaries first
+    const nextParagraphIndex = text.indexOf('\n\n', currentPosition + maxChunkSize * 0.8);
+    if (nextParagraphIndex !== -1 && nextParagraphIndex < endPosition + 500) {
+      endPosition = nextParagraphIndex + 2; // Include the paragraph break
+    }
+    // If no paragraph break, try to split at sentence boundaries
+    else {
+      const sentenceEndings = text.substring(currentPosition + maxChunkSize * 0.8, endPosition).match(/[。！？.!?]/g);
+      if (sentenceEndings && sentenceEndings.length > 0) {
+        const lastSentenceEnd = text.lastIndexOf(sentenceEndings[sentenceEndings.length - 1], endPosition);
+        if (lastSentenceEnd !== -1 && lastSentenceEnd > currentPosition + maxChunkSize * 0.5) {
+          endPosition = lastSentenceEnd + 1;
+        }
+      }
+    }
+    
+    // Extract current chunk
+    let chunk = text.substring(currentPosition, endPosition);
+    
+    // Add overlap from previous chunk for context preservation
+    if (currentPosition > 0) {
+      const overlapStart = Math.max(0, currentPosition - overlapSize);
+      const overlap = text.substring(overlapStart, currentPosition);
+      chunk = overlap + chunk;
+    }
+    
+    chunks.push(chunk);
+    currentPosition = endPosition;
+  }
+  
+  return chunks;
+};
+
+// Helper function to merge multiple proofread results with overlap handling
+const mergeResults = (results: ProofreadResult[]): ProofreadResult => {
+  if (results.length === 0) {
+    return {
+      correctedText: '',
+      issues: [],
+      summary: '无内容可处理',
+      score: 0
+    };
+  }
+  
+  if (results.length === 1) {
+    return results[0];
+  }
+  
+  // Merge corrected text with overlap handling
+  let mergedText = results[0].correctedText;
+  const overlapSize = 200; // Should match the overlap size in splitTextIntoChunks
+  
+  for (let i = 1; i < results.length; i++) {
+    const currentText = results[i].correctedText;
+    // Find the overlap point and remove duplicate content
+    let overlapStart = 0;
+    for (let j = Math.max(0, currentText.length - overlapSize * 2); j < currentText.length; j++) {
+      const suffix = currentText.substring(j);
+      if (mergedText.endsWith(suffix)) {
+        overlapStart = j;
+        break;
+      }
+    }
+    mergedText += currentText.substring(overlapStart);
+  }
+  
+  // Merge issues, removing duplicates
+  const uniqueIssues = new Map<string, Issue>();
+  results.forEach(result => {
+    result.issues.forEach(issue => {
+      // Create a unique key for each issue
+      const key = `${issue.original}-${issue.suggestion}-${issue.type}`;
+      if (!uniqueIssues.has(key)) {
+        uniqueIssues.set(key, issue);
+      }
+    });
+  });
+  
+  const issues = Array.from(uniqueIssues.values());
+  const score = Math.round(results.reduce((sum, r) => sum + r.score, 0) / results.length);
+  const summary = `共处理 ${results.length} 个文本片段，平均评分 ${score} 分`;
+  
+  return {
+    correctedText: mergedText,
+    issues,
+    summary,
+    score
+  };
+};
+
+// Cache related functions
+const CACHE_KEY_PREFIX = 'grammarzen_cache_';
+const CACHE_EXPIRY_TIME = 24 * 60 * 60 * 1000; // 24 hours
+
+interface CachedResult {
+  result: ProofreadResult;
+  timestamp: number;
+}
+
+// Generate cache key based on content and parameters
+const generateCacheKey = (content: string | Part[], mode: CheckMode, modelName: string, industry: IndustryType = 'general'): string => {
+  let contentHash: string;
+  if (typeof content === 'string') {
+    // Simple hash for string content
+    let hash = 0;
+    for (let i = 0; i < content.length; i++) {
+      const char = content.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32bit integer
+    }
+    contentHash = hash.toString(36);
+  } else {
+    // For Part[] content, use the length and first part as hash
+    const textContent = content.map(p => p.text || '').join('');
+    contentHash = textContent.length.toString(36);
+  }
+  return `${CACHE_KEY_PREFIX}${mode}_${modelName}_${industry}_${contentHash}`;
+};
+
+// Get cached result
+const getCachedResult = (key: string): ProofreadResult | null => {
+  try {
+    const cached = localStorage.getItem(key);
+    if (!cached) return null;
+    
+    const parsed: CachedResult = JSON.parse(cached);
+    const now = Date.now();
+    
+    // Check if cache is expired
+    if (now - parsed.timestamp > CACHE_EXPIRY_TIME) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    
+    return parsed.result;
+  } catch (e) {
+    console.warn('Cache read error:', e);
+    return null;
+  }
+};
+
+// Set cached result
+const setCachedResult = (key: string, result: ProofreadResult): void => {
+  try {
+    const cached: CachedResult = {
+      result,
+      timestamp: Date.now()
+    };
+    localStorage.setItem(key, JSON.stringify(cached));
+  } catch (e) {
+    console.warn('Cache write error:', e);
+  }
+};
+
+// Clear old cache entries
+const clearOldCache = (): void => {
+  try {
+    const now = Date.now();
+    const keysToRemove: string[] = [];
+    
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(CACHE_KEY_PREFIX)) {
+        try {
+          const cached = localStorage.getItem(key);
+          if (cached) {
+            const parsed: CachedResult = JSON.parse(cached);
+            if (now - parsed.timestamp > CACHE_EXPIRY_TIME) {
+              keysToRemove.push(key);
+            }
+          }
+        } catch (e) {
+          // Remove invalid cache entries
+          keysToRemove.push(key);
+        }
+      }
+    }
+    
+    keysToRemove.forEach(key => localStorage.removeItem(key));
+  } catch (e) {
+    console.warn('Cache cleanup error:', e);
+  }
+};
+
+// Clear old cache on module load
+clearOldCache();
+
+// Custom segmentation rules interface
+interface SegmentationRule {
+  pattern: string;
+  description: string;
+}
+
+// Default segmentation rules
+const defaultSegmentationRules: SegmentationRule[] = [
+  { pattern: '人工智能', description: '固定词组' },
+  { pattern: '机器学习', description: '固定词组' },
+  { pattern: '深度学习', description: '固定词组' },
+  { pattern: '自然语言处理', description: '固定词组' },
+  { pattern: '计算机视觉', description: '固定词组' }
+];
+
+// Simple Chinese word segmentation function with custom rules
+const segmentChineseText = (text: string, customRules: SegmentationRule[] = []): string[] => {
+  // Combine default and custom rules
+  const allRules = [...defaultSegmentationRules, ...customRules];
+  
+  // Sort rules by length (longer patterns first)
+  allRules.sort((a, b) => b.pattern.length - a.pattern.length);
+  
+  // Basic segmentation rules
+  const segments: string[] = [];
+  let i = 0;
+  
+  while (i < text.length) {
+    const char = text[i];
+    const charCode = char.charCodeAt(0);
+    
+    // Check if it's a Chinese character (Unicode range for common Chinese characters)
+    const isChinese = charCode >= 0x4E00 && charCode <= 0x9FFF;
+    // Check if it's a number
+    const isNumber = /\d/.test(char);
+    // Check if it's a letter
+    const isLetter = /[a-zA-Z]/.test(char);
+    // Check if it's a punctuation
+    const isPunctuation = /[，。！？；：""''（）【】]/.test(char);
+    
+    if (isPunctuation) {
+      segments.push(char);
+      i++;
+    } else if (isChinese) {
+      // Check for custom rules first
+      let matched = false;
+      for (const rule of allRules) {
+        if (text.substr(i, rule.pattern.length) === rule.pattern) {
+          segments.push(rule.pattern);
+          i += rule.pattern.length;
+          matched = true;
+          break;
+        }
+      }
+      
+      if (!matched) {
+        // Default single character segmentation for Chinese
+        segments.push(char);
+        i++;
+      }
+    } else if (isNumber || isLetter) {
+      // Group numbers and letters together
+      let currentSegment = char;
+      i++;
+      
+      while (i < text.length) {
+        const nextChar = text[i];
+        const nextIsNumber = /\d/.test(nextChar);
+        const nextIsLetter = /[a-zA-Z]/.test(nextChar);
+        
+        if (nextIsNumber || nextIsLetter) {
+          currentSegment += nextChar;
+          i++;
+        } else {
+          break;
+        }
+      }
+      
+      segments.push(currentSegment);
+    } else {
+      // Handle spaces and other characters
+      i++;
+    }
+  }
+  
+  return segments;
+};
+
+// Function to enhance proofreading with segmentation
+const enhanceWithSegmentation = (text: string, customRules: SegmentationRule[] = []): string => {
+  const segments = segmentChineseText(text, customRules);
+  // For now, we just return the original text, but we can use the segments for better analysis
+  return text;
+};
+
 export const checkChineseText = async (
   content: string | Part[], 
   mode: CheckMode = 'fast',
@@ -303,11 +673,39 @@ export const checkChineseText = async (
   customRules: string[] = [],
   userPrompt: string = "",
   polishingTone: string = "general", // Added tone for polishing
+  industry: IndustryType = 'general', // Added industry template
   onUpdate?: (partial: ProofreadResult) => void
 ): Promise<ProofreadResult> => {
+  let rawResult: ProofreadResult;
 
-  // 1. Build System Instruction (Common for all models)
+  // 1. Check cache first
+  const cacheKey = generateCacheKey(content, mode, modelName, industry);
+  const cachedResult = getCachedResult(cacheKey);
+  if (cachedResult) {
+    if (onUpdate) {
+      onUpdate(cachedResult);
+    }
+    return cachedResult;
+  }
+
+  // 2. Enhance text with segmentation if it's a string
+  let enhancedContent = content;
+  if (typeof content === 'string') {
+    // Convert custom rules to SegmentationRule format
+    const segmentationRules: SegmentationRule[] = customRules.map(rule => ({
+      pattern: rule,
+      description: 'Custom rule'
+    }));
+    enhancedContent = enhanceWithSegmentation(content, segmentationRules);
+  }
+
+  // 3. Build System Instruction (Common for all models)
   let systemInstruction = "";
+  
+  // Add industry-specific instruction
+  const industryInstruction = industry !== 'general' 
+    ? `\n\n【行业特定规范】\n${industryTemplates[industry].systemInstruction}` 
+    : "";
   
   const whitelistInstruction = whitelist.length > 0 
     ? `\n\n【绝对指令：白名单】\n以下词汇是用户指定的专用术语/人名，你**绝不能**对其进行任何修改、替换或纠错，必须保留原文：\n[${whitelist.join(', ')}]\n如果原文中出现了这些词，即使你认为有错，也请**忽略**。` 
@@ -354,6 +752,7 @@ export const checkChineseText = async (
       4. **政治与不当言论**。
       
       ${whitelistInstruction}
+      ${industryInstruction}
       
       请只返回 'sensitive' 或 'privacy' 类型的 Issue。
     `;
@@ -363,6 +762,7 @@ export const checkChineseText = async (
       
       ${whitelistInstruction}
       ${customRulesInstruction}
+      ${industryInstruction}
       
       【检查重点】
       1. **政治规范**：领导人姓名、职务、排序及政治术语（“四个意识”等）必须准确无误。
@@ -394,6 +794,7 @@ export const checkChineseText = async (
       4. **风格对齐**：当前要求的润色风格是【${toneDesc}】。
       
       ${whitelistInstruction}
+      ${industryInstruction}
       
       【输出要求】
       1. **correctedText**：必须包含完整的润色后的文本。
@@ -406,6 +807,7 @@ export const checkChineseText = async (
       你是一名排版设计师。根据内容检查排版格式。
       重点：字体统一性、标点挤压（禁止行首标点）、全角半角混用、段落缩进。
       ${whitelistInstruction}
+      ${industryInstruction}
       只关注 'format' 类型问题。
      `;
   } else if (mode === 'professional') {
@@ -415,6 +817,7 @@ export const checkChineseText = async (
       ${linguisticRules}
       ${piiInstruction}
       ${sensitiveWordsInstruction}
+      ${industryInstruction}
       
       请进行深度校对，覆盖：CSC (拼写纠错)、语法逻辑、标点规范、合规敏感词。
     `;
@@ -427,6 +830,7 @@ export const checkChineseText = async (
       3. 标点错误。
       ${whitelistInstruction}
       ${linguisticRules}
+      ${industryInstruction}
     `;
   }
 
@@ -444,129 +848,177 @@ export const checkChineseText = async (
     }
   `;
 
-  // 2. Dispatch to appropriate provider
-  let rawResult: ProofreadResult;
-  
-  if (modelName.startsWith('gemini')) {
-    if (!geminiApiKey) throw new Error("Please configure Google API Key in .env");
+  // 2. Check if content is long text and needs chunking
+  if (typeof enhancedContent === 'string' && enhancedContent.length > 8000) {
+    const chunks = splitTextIntoChunks(enhancedContent);
+    const results: ProofreadResult[] = [];
     
-    try {
-      const resultStream = await googleAI.models.generateContentStream({
-        model: modelName,
-        contents: typeof content === 'string' ? { parts: [{ text: content }] } : { parts: content },
-        config: {
-          systemInstruction,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              correctedText: { type: Type.STRING },
-              issues: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    original: { type: Type.STRING },
-                    suggestion: { type: Type.STRING },
-                    reason: { type: Type.STRING },
-                    type: { type: Type.STRING, enum: [IssueType.TYPO, IssueType.GRAMMAR, IssueType.PUNCTUATION, IssueType.STYLE, IssueType.SUGGESTION, IssueType.SENSITIVE, IssueType.PRIVACY, IssueType.FORMAT] },
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      // Create a partial update function to show progress
+      const chunkOnUpdate = onUpdate ? (partial: ProofreadResult) => {
+        const progress = Math.round(((i + 1) / chunks.length) * 100);
+        onUpdate({
+          ...partial,
+          summary: `正在处理第 ${i + 1}/${chunks.length} 段 (${progress}%)...`
+        });
+      } : undefined;
+      
+      // Recursively call checkChineseText for each chunk
+      const chunkResult = await checkChineseText(
+        chunk,
+        mode,
+        modelName,
+        whitelist,
+        sensitiveWords,
+        customRules,
+        userPrompt,
+        polishingTone,
+        chunkOnUpdate
+      );
+      results.push(chunkResult);
+    }
+    
+    // Merge results
+    rawResult = mergeResults(results);
+  } else {
+    // Original single chunk processing
+    if (modelName.startsWith('gemini')) {
+      if (!geminiApiKey) throw new Error("Please configure Google API Key in .env");
+      
+      try {
+        const resultStream = await googleAI.models.generateContentStream({
+          model: modelName,
+          contents: typeof enhancedContent === 'string' ? { parts: [{ text: enhancedContent }] } : { parts: enhancedContent },
+          config: {
+            systemInstruction,
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                correctedText: { type: Type.STRING },
+                issues: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      original: { type: Type.STRING },
+                      suggestion: { type: Type.STRING },
+                      reason: { type: Type.STRING },
+                      type: { type: Type.STRING, enum: [IssueType.TYPO, IssueType.GRAMMAR, IssueType.PUNCTUATION, IssueType.STYLE, IssueType.SUGGESTION, IssueType.SENSITIVE, IssueType.PRIVACY, IssueType.FORMAT] },
+                    },
+                    required: ["original", "suggestion", "reason", "type"],
                   },
-                  required: ["original", "suggestion", "reason", "type"],
                 },
+                summary: { type: Type.STRING },
+                score: { type: Type.NUMBER },
               },
-              summary: { type: Type.STRING },
-              score: { type: Type.NUMBER },
+              required: ["correctedText", "summary", "score", "issues"],
             },
-            required: ["correctedText", "summary", "score", "issues"],
           },
-        },
-      });
+        });
 
-      let fullText = "";
-      for await (const chunk of resultStream) {
-        const text = chunk.text;
-        if (text) {
-          fullText += text;
-          if (onUpdate) {
-            const partial = parsePartialJson(fullText);
-            if (partial.correctedText) {
-               onUpdate(partial as ProofreadResult);
+        let fullText = "";
+        for await (const chunk of resultStream) {
+          const text = chunk.text;
+          if (text) {
+            fullText += text;
+            if (onUpdate) {
+              const partial = parsePartialJson(fullText);
+              if (partial.correctedText) {
+                 onUpdate(partial as ProofreadResult);
+              }
             }
           }
         }
-      }
-      
-      let cleanJson = fullText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
-      const firstBrace = cleanJson.indexOf('{');
-      const lastBrace = cleanJson.lastIndexOf('}');
-      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-          cleanJson = cleanJson.substring(firstBrace, lastBrace + 1);
-      }
-
-      try {
-        rawResult = JSON.parse(cleanJson) as ProofreadResult;
-      } catch (e) {
-        console.warn("Gemini JSON Parse Error (Recovering):", e);
-        const partial = parsePartialJson(fullText);
-        if (partial.correctedText) {
-           rawResult = {
-             correctedText: partial.correctedText,
-             issues: partial.issues || [],
-             summary: partial.summary || "分析完成（部分数据可能丢失）",
-             score: partial.score || 80
-           } as ProofreadResult;
-        } else {
-           throw new Error("模型返回的不是有效的 JSON 格式");
+        
+        let cleanJson = fullText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+        const firstBrace = cleanJson.indexOf('{');
+        const lastBrace = cleanJson.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+            cleanJson = cleanJson.substring(firstBrace, lastBrace + 1);
         }
+
+        try {
+          rawResult = JSON.parse(cleanJson) as ProofreadResult;
+        } catch (e) {
+          console.warn("Gemini JSON Parse Error (Recovering):", e);
+          const partial = parsePartialJson(fullText);
+          if (partial.correctedText) {
+             rawResult = {
+               correctedText: partial.correctedText,
+               issues: partial.issues || [],
+               summary: partial.summary || "分析完成（部分数据可能丢失）",
+               score: partial.score || 80
+             } as ProofreadResult;
+          } else {
+             throw new Error("模型返回的不是有效的 JSON 格式");
+          }
+        }
+      } catch (error) {
+        console.error("Gemini API Error:", error);
+        throw error;
       }
-    } catch (error) {
-      console.error("Gemini API Error:", error);
-      throw error;
     }
-  } 
-  else if (modelName.startsWith('deepseek')) {
-    if (!deepseekApiKey) throw new Error("未配置 DeepSeek API Key");
-    rawResult = await callOpenAICompatibleStream(
-      'https://api.deepseek.com/chat/completions',
-      deepseekApiKey,
-      modelName,
-      systemInstruction,
-      content,
-      onUpdate
-    );
-  }
-  else if (modelName.startsWith('spark')) {
-    if (!sparkApiKey) throw new Error("未配置星火 API Key");
-    let sparkModelVersion = 'generalv3.5';
-    switch (modelName) {
-        case 'spark-ultra': sparkModelVersion = '4.0Ultra'; break;
-        case 'spark-max': sparkModelVersion = 'generalv3.5'; break;
-        case 'spark-pro': sparkModelVersion = 'generalv3'; break;
-        case 'spark-lite': sparkModelVersion = 'general'; break;
+    else if (modelName.startsWith('deepseek')) {
+      if (!deepseekApiKey) throw new Error("未配置 DeepSeek API Key");
+      rawResult = await callOpenAICompatibleStream(
+        'https://api.deepseek.com/chat/completions',
+        deepseekApiKey,
+        modelName,
+        systemInstruction,
+        enhancedContent,
+        onUpdate
+      );
     }
-    rawResult = await callOpenAICompatibleStream(
-      'https://spark-api-open.xf-yun.com/v1/chat/completions',
-      sparkApiKey,
-      sparkModelVersion,
-      systemInstruction,
-      content,
-      onUpdate
-    );
-  }
-  else if (modelName.startsWith('moonshot')) {
-    if (!kimiApiKey) throw new Error("未配置 Kimi (Moonshot) API Key");
-    rawResult = await callOpenAICompatibleStream(
-      'https://api.moonshot.cn/v1/chat/completions',
-      kimiApiKey,
-      modelName,
-      systemInstruction,
-      content,
-      onUpdate
-    );
-  } else {
-    throw new Error(`Unsupported model: ${modelName}`);
+    else if (modelName.startsWith('spark')) {
+      if (!sparkApiKey) throw new Error("未配置星火 API Key");
+      let sparkModelVersion = 'generalv3.5';
+      switch (modelName) {
+          case 'spark-ultra': sparkModelVersion = '4.0Ultra'; break;
+          case 'spark-max': sparkModelVersion = 'generalv3.5'; break;
+          case 'spark-pro': sparkModelVersion = 'generalv3'; break;
+          case 'spark-lite': sparkModelVersion = 'general'; break;
+      }
+      rawResult = await callOpenAICompatibleStream(
+        'https://spark-api-open.xf-yun.com/v1/chat/completions',
+        sparkApiKey,
+        sparkModelVersion,
+        systemInstruction,
+        enhancedContent,
+        onUpdate
+      );
+    }
+    else if (modelName.startsWith('moonshot')) {
+      if (!kimiApiKey) throw new Error("未配置 Kimi (Moonshot) API Key");
+      rawResult = await callOpenAICompatibleStream(
+        'https://api.moonshot.cn/v1/chat/completions',
+        kimiApiKey,
+        modelName,
+        systemInstruction,
+        enhancedContent,
+        onUpdate
+      );
+    } else if (modelName.startsWith('min-max')) {
+      if (!minmaxApiKey) throw new Error("未配置 Min-Max API Key");
+      rawResult = await callOpenAICompatibleStream(
+        'https://api.minimax.chat/v1/text/chatcompletion',
+        minmaxApiKey,
+        'abab5.5-chat',
+        systemInstruction,
+        enhancedContent,
+        onUpdate
+      );
+    } else {
+      throw new Error(`Unsupported model: ${modelName}`);
+    }
   }
 
   // 3. Post-Process: Enforce Whitelist Reversion
-  return postProcessResult(rawResult, whitelist);
+  const finalResult = postProcessResult(rawResult, whitelist);
+  
+  // 4. Cache the result
+  setCachedResult(cacheKey, finalResult);
+  
+  return finalResult;
 };

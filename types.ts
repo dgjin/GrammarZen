@@ -45,3 +45,40 @@ export interface HistoryRecord {
 }
 
 export type LoadingState = 'idle' | 'loading' | 'streaming' | 'success' | 'error';
+
+// 智能推荐相关类型
+export interface Recommendation {
+  id: string;
+  type: 'template' | 'industry' | 'mode' | 'suggestion';
+  title: string;
+  description: string;
+  content?: string;
+  industry?: string;
+  mode?: string;
+  score?: number;
+}
+
+// 协作功能相关类型
+export interface CollaborationSession {
+  id: string;
+  name: string;
+  creatorId: string;
+  participants: string[];
+  document: {
+    originalText: string;
+    currentText: string;
+    issues: Issue[];
+  };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CollaborationMessage {
+  id: string;
+  sessionId: string;
+  userId: string;
+  userName: string;
+  content: string;
+  type: 'message' | 'edit' | 'comment';
+  createdAt: string;
+}

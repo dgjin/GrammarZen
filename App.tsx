@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import mammoth from 'mammoth';
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
-import { checkChineseText, Part, CheckMode } from './services/geminiService';
-import { ProofreadResult, LoadingState, RuleLibrary, HistoryRecord } from './types';
+import { checkChineseText, Part, CheckMode, IndustryType } from './services/geminiService';
+import { ProofreadResult, LoadingState, RuleLibrary, HistoryRecord, Recommendation, CollaborationSession } from './types';
 import { ResultView } from './components/ResultView';
 import { RuleManagerModal } from './components/RuleManagerModal';
 import { SensitiveWordsModal } from './components/SensitiveWordsModal';
@@ -12,13 +12,22 @@ import { AuthModal } from './components/AuthModal';
 import { UserProfileModal } from './components/UserProfileModal';
 import { PolishingModal } from './components/PolishingModal';
 import { HistoryModal } from './components/HistoryModal';
+import { processLargeFile } from './utils/fileUtils';
+import { getRecommendations, getHistoryStats } from './services/recommendationService';
+import { 
+  createCollaborationSession, 
+  getCollaborationSessions, 
+  updateCollaborationDocument,
+  addCollaborationParticipant
+} from './services/collaborationService';
 import { 
   Wand2, Eraser, AlertCircle, BookOpenCheck, Upload, FileText, X, FileImage, 
   FileType, Sparkles, Zap, ShieldCheck, Trash2, Book, ShieldAlert, Cpu, 
   ChevronDown, FileBadge, PenTool, LayoutTemplate, Check, Loader2, FileSearch, 
-  HelpCircle, MessageSquarePlus, LogIn, GraduationCap, Briefcase, Palette, Coffee, Layers, History
+  HelpCircle, MessageSquarePlus, LogIn, GraduationCap, Briefcase, Palette, Coffee, Layers, History,
+  Users, Share2, Lightbulb, BarChart2
 } from 'lucide-react';
-import { supabase, loadUserConfig, loadRuleLibraries, saveWhitelist, saveSensitiveWords, addRuleLibrary, deleteRuleLibrary, saveHistoryRecord } from './services/supabaseService';
+import { supabase, loadUserConfig, loadRuleLibraries, saveWhitelist, saveSensitiveWords, addRuleLibrary, deleteRuleLibrary, saveHistoryRecord, loadHistory } from './services/supabaseService';
 
 // Configure PDF.js worker
 GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs`;
@@ -77,6 +86,7 @@ export default function App() {
   const [modelName, setModelName] = useState('gemini-3-flash-preview');
   const [userPrompt, setUserPrompt] = useState('');
   const [polishingTone, setPolishingTone] = useState<string>('general');
+  const [industry, setIndustry] = useState<IndustryType>('general');
   
   // File Upload State
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -100,6 +110,15 @@ export default function App() {
   const [selectedLibIds, setSelectedLibIds] = useState<Set<string>>(new Set());
   const [showRuleManager, setShowRuleManager] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
+  
+  // Smart Recommendation State
+  const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
+  const [historyRecords, setHistoryRecords] = useState<HistoryRecord[]>([]);
+  
+  // Collaboration State
+  const [collaborationSessions, setCollaborationSessions] = useState<CollaborationSession[]>([]);
+  const [showCollaborationModal, setShowCollaborationModal] = useState(false);
+  const [newSessionName, setNewSessionName] = useState('');
   
   // Help Modal State
   const [showHelpModal, setShowHelpModal] = useState(false);
@@ -144,6 +163,12 @@ export default function App() {
         // Load Rules
         const rules = await loadRuleLibraries(user?.id);
         setRuleLibraries(rules);
+
+        // Load History Records for recommendations
+        if (user) {
+          const records = await loadHistory(user.id);
+          setHistoryRecords(records);
+        }
     };
 
     fetchUserData();
@@ -208,6 +233,22 @@ export default function App() {
       }
   };
 
+  // Update recommendations when input text changes
+  useEffect(() => {
+    const updateRecommendations = async () => {
+      if (inputText.length > 0) {
+        const recs = getRecommendations(inputText, historyRecords);
+        setRecommendations(recs);
+      } else {
+        setRecommendations([]);
+      }
+    };
+
+    // Debounce to avoid frequent updates
+    const timeoutId = setTimeout(updateRecommendations, 500);
+    return () => clearTimeout(timeoutId);
+  }, [inputText, historyRecords]);
+
   const handleReplaceSelection = (newText: string) => {
       if (!selection || !textareaRef.current) return;
       
@@ -234,6 +275,38 @@ export default function App() {
         await supabase.auth.signOut();
         setShowProfileModal(false);
         // State updates handled by onAuthStateChange
+    }
+  };
+
+  // Collaboration Functions
+  const handleCreateCollaborationSession = async () => {
+    if (!user || !newSessionName.trim()) return;
+    
+    const session = createCollaborationSession(newSessionName, user.id, inputText);
+    setCollaborationSessions(prev => [...prev, session]);
+    setNewSessionName('');
+    setShowCollaborationModal(false);
+  };
+
+  const loadCollaborationSessions = async () => {
+    if (!user) return;
+    const sessions = getCollaborationSessions(user.id);
+    setCollaborationSessions(sessions);
+  };
+
+  const handleJoinCollaborationSession = async (sessionId: string) => {
+    if (!user) return;
+    const session = addCollaborationParticipant(sessionId, user.id);
+    if (session) {
+      setCollaborationSessions(prev => prev.map(s => s.id === sessionId ? session : s));
+    }
+  };
+
+  const handleUpdateCollaborationDocument = async (sessionId: string, newText: string, issues: any[]) => {
+    if (!user) return;
+    const session = updateCollaborationDocument(sessionId, user.id, newText, issues);
+    if (session) {
+      setCollaborationSessions(prev => prev.map(s => s.id === sessionId ? session : s));
     }
   };
 
@@ -398,6 +471,7 @@ export default function App() {
         activeRules,
         userPrompt,
         polishingTone, // Pass the polishing tone
+        industry, // Pass the industry template
         (partialResult) => {
            setLoadingState('streaming');
            setResult(partialResult);
@@ -445,7 +519,7 @@ export default function App() {
       }
   };
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
@@ -461,8 +535,8 @@ export default function App() {
       return;
     }
 
-    if (file.size > 10 * 1024 * 1024) { 
-      setError("文件大小不能超过 10MB。");
+    if (file.size > 15 * 1024 * 1024) { 
+      setError("文件大小不能超过 15MB。");
       return;
     }
 
@@ -472,102 +546,63 @@ export default function App() {
     setUploadProgress(0);
     setProgressLabel('上传');
 
-    const reader = new FileReader();
+    try {
+      // 使用分块处理大文件
+      const base64Data = await processLargeFile(file, (progress) => {
+        setUploadProgress(progress);
+      });
 
-    reader.onprogress = (e) => {
-      if (e.lengthComputable) {
-        const percent = Math.round((e.loaded / e.total) * 100);
-        setUploadProgress(percent);
-      }
-    };
-
-    reader.onload = async (e) => {
-      const result = e.target?.result as string;
-      if (!result) { setIsUploading(false); return; }
-      
-      const base64Data = result.split(',')[1];
-
-      if (file.type !== 'application/pdf') { setProgressLabel('处理'); }
+      setProgressLabel('处理');
 
       if (file.type === 'application/pdf') {
         if (mode === 'file_scan') {
-           setAttachment({ name: file.name, mimeType: file.type, data: base64Data, size: file.size, visualData: [] });
-           setInputText("");
-           setIsUploading(false);
-           if (fileInputRef.current) fileInputRef.current.value = '';
-           return;
-        }
-
-        try {
-            const arrayBuffer = base64ToArrayBuffer(base64Data);
-            const loadingTask = getDocument({ data: arrayBuffer });
-            const pdf = await loadingTask.promise;
-            setPendingPDF({ file, doc: pdf, base64: base64Data });
-            setPdfPageCount(pdf.numPages);
-            setShowPDFModal(true);
-            setIsUploading(false);
-            if (fileInputRef.current) fileInputRef.current.value = '';
-        } catch (err) {
-            console.error("PDF Parsing Error", err);
-            setError("PDF 解析失败，请重试或尝试转换为图片上传。");
-            setIsUploading(false);
-        }
-        return;
-      } 
-      
-      else if (file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
-        try {
+          setAttachment({ name: file.name, mimeType: file.type, data: base64Data, size: file.size, visualData: [] });
+          setInputText("");
+        } else {
           const arrayBuffer = base64ToArrayBuffer(base64Data);
-          const mammothResult = await mammoth.extractRawText({ arrayBuffer });
-          setInputText(mammothResult.value);
-          setAttachment({ name: file.name, mimeType: file.type, data: base64Data, size: file.size });
-          if (textareaRef.current) textareaRef.current.focus();
-        } catch (e) {
-          console.error("Word extraction failed", e);
-          setError("无法读取 Word 文档，请稍后重试或复制文字粘贴。");
+          const loadingTask = getDocument({ data: arrayBuffer });
+          const pdf = await loadingTask.promise;
+          setPendingPDF({ file, doc: pdf, base64: base64Data });
+          setPdfPageCount(pdf.numPages);
+          setShowPDFModal(true);
         }
+      } 
+      else if (file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+        const arrayBuffer = base64ToArrayBuffer(base64Data);
+        const mammothResult = await mammoth.extractRawText({ arrayBuffer });
+        setInputText(mammothResult.value);
+        setAttachment({ name: file.name, mimeType: file.type, data: base64Data, size: file.size });
+        if (textareaRef.current) textareaRef.current.focus();
       } 
       else if (file.type === 'text/plain') {
-          try {
-             const arrayBuffer = base64ToArrayBuffer(base64Data);
-             const textDecoder = new TextDecoder('utf-8');
-             const text = textDecoder.decode(arrayBuffer);
-             setInputText(text);
-             setAttachment({ name: file.name, mimeType: file.type, data: base64Data, size: file.size });
-             if (textareaRef.current) textareaRef.current.focus();
-          } catch (e) {
-              setError("文本文件读取失败。");
-          }
+        const arrayBuffer = base64ToArrayBuffer(base64Data);
+        const textDecoder = new TextDecoder('utf-8');
+        const text = textDecoder.decode(arrayBuffer);
+        setInputText(text);
+        setAttachment({ name: file.name, mimeType: file.type, data: base64Data, size: file.size });
+        if (textareaRef.current) textareaRef.current.focus();
       }
       else if (file.type === 'application/rtf' || file.type === 'text/rtf' || file.name.endsWith('.rtf')) {
-          try {
-             const arrayBuffer = base64ToArrayBuffer(base64Data);
-             const textDecoder = new TextDecoder('utf-8');
-             const rtfContent = textDecoder.decode(arrayBuffer);
-             const text = parseRTF(rtfContent);
-             setInputText(text);
-             setAttachment({ name: file.name, mimeType: file.type, data: base64Data, size: file.size });
-             if (textareaRef.current) textareaRef.current.focus();
-          } catch (e) {
-              setError("RTF 文件读取失败。");
-          }
+        const arrayBuffer = base64ToArrayBuffer(base64Data);
+        const textDecoder = new TextDecoder('utf-8');
+        const rtfContent = textDecoder.decode(arrayBuffer);
+        const text = parseRTF(rtfContent);
+        setInputText(text);
+        setAttachment({ name: file.name, mimeType: file.type, data: base64Data, size: file.size });
+        if (textareaRef.current) textareaRef.current.focus();
       }
       else {
-         setAttachment({ name: file.name, mimeType: file.type, data: base64Data, size: file.size, visualData: [base64Data] });
+        // Image files
+        setAttachment({ name: file.name, mimeType: file.type, data: base64Data, size: file.size, visualData: [base64Data] });
       }
-      
+    } catch (err) {
+      console.error("File processing error:", err);
+      setError(`文件处理失败: ${(err as Error).message || '未知错误'}`);
+    } finally {
       setIsUploading(false);
       setUploadProgress(0);
       if (fileInputRef.current) fileInputRef.current.value = '';
-    };
-
-    reader.onerror = () => {
-        setError("文件读取出错，请重试。");
-        setIsUploading(false);
-        if (fileInputRef.current) fileInputRef.current.value = '';
-    };
-
-    reader.readAsDataURL(file);
+    }
   };
 
   const handlePDFProcessConfirm = async (pages: number[], scale: number) => {
@@ -583,27 +618,47 @@ export default function App() {
         let extractedText = "";
         const visualImages: string[] = [];
 
-        for (let i = 0; i < pages.length; i++) {
-            const pageNum = pages[i];
-            const page = await doc.getPage(pageNum);
-            const textContent = await page.getTextContent();
-            const pageText = textContent.items.map((item: any) => item.str).join(' ');
-            extractedText += pageText + "\n\n";
+        // Process pages in chunks to avoid UI blocking
+        const chunkSize = 3;
+        for (let i = 0; i < pages.length; i += chunkSize) {
+            const chunk = pages.slice(i, i + chunkSize);
+            
+            for (const pageNum of chunk) {
+                const page = await doc.getPage(pageNum);
+                
+                // Extract text
+                const textContent = await page.getTextContent();
+                const pageText = textContent.items.map((item: any) => item.str).join(' ');
+                extractedText += pageText + "\n\n";
 
-            try {
-                const viewport = page.getViewport({ scale: scale });
-                const canvas = document.createElement('canvas');
-                const context = canvas.getContext('2d');
-                canvas.height = viewport.height;
-                canvas.width = viewport.width;
-                if (context) {
-                    await page.render({ canvasContext: context, viewport } as any).promise;
-                    visualImages.push(canvas.toDataURL('image/jpeg', 0.8).split(',')[1]);
+                // Generate visual preview (optional)
+                try {
+                    const viewport = page.getViewport({ scale: scale });
+                    const canvas = document.createElement('canvas');
+                    const context = canvas.getContext('2d');
+                    if (context) {
+                        canvas.height = Math.min(viewport.height, 1080); // Limit height to avoid memory issues
+                        canvas.width = Math.min(viewport.width, 1920); // Limit width to avoid memory issues
+                        const scaledViewport = page.getViewport({ scale: Math.min(scale, 1.0) });
+                        
+                        await page.render({ 
+                            canvasContext: context, 
+                            viewport: scaledViewport 
+                        } as any).promise;
+                        
+                        visualImages.push(canvas.toDataURL('image/jpeg', 0.7).split(',')[1]);
+                    }
+                } catch (visualErr) {
+                    console.warn(`Failed to render PDF page ${pageNum} to image`, visualErr);
                 }
-            } catch (visualErr) {
-                console.warn(`Failed to render PDF page ${pageNum} to image`, visualErr);
             }
-            setUploadProgress(Math.round(((i + 1) / pages.length) * 100));
+            
+            // Update progress after each chunk
+            const processedPages = Math.min(i + chunkSize, pages.length);
+            setUploadProgress(Math.round((processedPages / pages.length) * 100));
+            
+            // Add a small delay to allow UI to update
+            await new Promise(resolve => setTimeout(resolve, 100));
         }
 
         if (extractedText.trim().length > 20) {
@@ -617,7 +672,7 @@ export default function App() {
 
     } catch (e) {
         console.error("PDF Processing Error", e);
-        setError("PDF 处理过程中发生错误，请重试。");
+        setError(`PDF 处理过程中发生错误: ${(e as Error).message || '未知错误'}`);
     } finally {
         setPendingPDF(null);
         setIsUploading(false);
@@ -931,6 +986,9 @@ export default function App() {
                                 <option value="moonshot-v1-32k">Kimi moonshot-v1-32k</option>
                                 <option value="moonshot-v1-128k">Kimi moonshot-v1-128k</option>
                               </optgroup>
+                              <optgroup label="Min-Max (需配置 Key)">
+                                <option value="min-max">Min-Max 模型</option>
+                              </optgroup>
                           </select>
                           <ChevronDown className="w-3 h-3 text-slate-400 absolute right-0 top-1/2 -translate-y-1/2 pointer-events-none" />
                       </div>
@@ -967,6 +1025,103 @@ export default function App() {
                   )}
                </div>
             </div>
+            
+            {/* Industry Template Selector */}
+            <div className="px-4 py-2 bg-slate-50 border-t border-slate-100 flex items-center gap-3 animate-fade-in">
+                <span className="text-xs font-medium text-slate-700 flex items-center gap-1">
+                    <Briefcase className="w-3.5 h-3.5" />
+                    行业模板:
+                </span>
+                <div className="flex gap-2">
+                    {
+                        [
+                            { id: 'general', label: '通用' },
+                            { id: 'academic', label: '学术' },
+                            { id: 'technical', label: '技术' },
+                            { id: 'social', label: '社交' },
+                            { id: 'business', label: '商务' },
+                            { id: 'legal', label: '法律' }
+                        ].map(item => {
+                            const isSelected = industry === item.id;
+                            return (
+                                <button
+                                    key={item.id}
+                                    onClick={() => setIndustry(item.id as IndustryType)}
+                                    disabled={isBusy}
+                                    className={`
+                                        flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition-all border
+                                        ${isSelected 
+                                            ? 'bg-white text-brand-700 border-brand-300 shadow-sm' 
+                                            : 'bg-transparent text-slate-600/70 border-transparent hover:bg-slate-100/50 hover:text-slate-800'
+                                        }
+                                    `}
+                                >
+                                    {item.label}
+                                </button>
+                            )
+                        })
+                    }
+                </div>
+            </div>
+
+            {/* Smart Recommendations */}
+            {recommendations.length > 0 && (
+              <div className="px-4 py-3 bg-indigo-50 border-t border-indigo-100 animate-fade-in">
+                  <div className="flex items-center gap-2 mb-2">
+                      <Lightbulb className="w-4 h-4 text-indigo-600" />
+                      <span className="text-xs font-medium text-indigo-700">智能推荐</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      {recommendations.map(rec => (
+                          <div key={rec.id} className="bg-white border border-indigo-200 rounded-lg p-3 shadow-sm hover:shadow transition-shadow">
+                              <h4 className="text-xs font-medium text-indigo-800 mb-1">{rec.title}</h4>
+                              <p className="text-xs text-slate-600 mb-2">{rec.description}</p>
+                              {rec.type === 'industry' && (
+                                  <button
+                                      onClick={() => setIndustry(rec.industry as IndustryType)}
+                                      disabled={isBusy}
+                                      className="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+                                  >
+                                      应用此模板
+                                  </button>
+                              )}
+                              {rec.type === 'mode' && (
+                                  <button
+                                      onClick={() => setMode(rec.mode as CheckMode)}
+                                      disabled={isBusy}
+                                      className="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+                                  >
+                                      使用此模式
+                                  </button>
+                              )}
+                          </div>
+                      ))}
+                  </div>
+              </div>
+            )}
+
+            {/* Collaboration Button */}
+            {user && (
+              <div className="px-4 py-2 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                      <Users className="w-4 h-4 text-slate-500" />
+                      <span className="text-xs font-medium text-slate-600">协作功能</span>
+                  </div>
+                  <div className="flex gap-2">
+                      <button
+                          onClick={() => {
+                            loadCollaborationSessions();
+                            setShowCollaborationModal(true);
+                          }}
+                          disabled={isBusy}
+                          className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-brand-600 hover:bg-white bg-transparent rounded-lg transition-colors border border-transparent hover:border-slate-200 hover:shadow-sm"
+                      >
+                          <Share2 className="w-3.5 h-3.5" />
+                          协作会话
+                      </button>
+                    </div>
+              </div>
+            )}
             
             {/* Tone Selector for Polishing Mode */}
             {mode === 'polishing' && (
@@ -1061,7 +1216,7 @@ export default function App() {
       </main>
 
       <footer className="mt-auto py-6 text-center text-slate-400 text-sm">
-        <p>© {new Date().getFullYear()} GrammarZen. Powered by Google Gemini. 创意设计 dgjin</p>
+        <p>© {new Date().getFullYear()} GrammarZen. Powered by dgjin</p>
       </footer>
 
       {/* Modals */}
@@ -1125,6 +1280,78 @@ export default function App() {
       <AuthModal isOpen={showAuthModal} onClose={() => setShowAuthModal(false)} onSuccess={() => setShowAuthModal(false)} />
       <UserProfileModal isOpen={showProfileModal} onClose={() => setShowProfileModal(false)} user={user} onLogout={handleLogout} />
       {user && <HistoryModal isOpen={showHistoryModal} onClose={() => setShowHistoryModal(false)} userId={user.id} onLoadRecord={handleLoadHistoryRecord} />}
+      
+      {/* Collaboration Modal */}
+      {showCollaborationModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowCollaborationModal(false)} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-y-auto">
+            <div className="flex items-center justify-between p-4 border-b border-slate-200">
+              <h3 className="text-lg font-semibold text-slate-900">协作会话</h3>
+              <button 
+                onClick={() => setShowCollaborationModal(false)}
+                className="text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4">
+              {/* Create New Session */}
+              <div className="mb-6">
+                <h4 className="text-sm font-medium text-slate-700 mb-3">创建新会话</h4>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newSessionName}
+                    onChange={(e) => setNewSessionName(e.target.value)}
+                    placeholder="会话名称"
+                    className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-brand-500 focus:border-brand-500"
+                  />
+                  <button
+                    onClick={handleCreateCollaborationSession}
+                    disabled={!newSessionName.trim()}
+                    className="px-4 py-2 bg-brand-600 text-white rounded-lg text-sm font-medium hover:bg-brand-700 transition-colors disabled:bg-slate-300 disabled:cursor-not-allowed"
+                  >
+                    创建
+                  </button>
+                </div>
+              </div>
+              
+              {/* Existing Sessions */}
+              <div>
+                <h4 className="text-sm font-medium text-slate-700 mb-3">我的会话</h4>
+                {collaborationSessions.length === 0 ? (
+                  <div className="text-center py-8 text-slate-500">
+                    <Users className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                    <p>暂无协作会话</p>
+                    <p className="text-xs mt-1">创建一个新会话开始协作</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {collaborationSessions.map(session => (
+                      <div key={session.id} className="flex items-center justify-between p-3 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors">
+                        <div>
+                          <h5 className="text-sm font-medium text-slate-900">{session.name}</h5>
+                          <p className="text-xs text-slate-500">{session.participants.length} 参与者 • {new Date(session.createdAt).toLocaleString()}</p>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setInputText(session.document.currentText);
+                            setShowCollaborationModal(false);
+                          }}
+                          className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded-lg text-xs font-medium hover:bg-slate-200 transition-colors"
+                        >
+                          打开
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

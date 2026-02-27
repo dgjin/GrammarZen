@@ -91,6 +91,7 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [showAttachment, setShowAttachment] = useState(false);
   const [isMobileSheetOpen, setIsMobileSheetOpen] = useState(false);
+  const [sortBy, setSortBy] = useState<'severity' | 'position' | 'type'>('position');
   
   // State for interactive proofreading
   const [resolvedIndices, setResolvedIndices] = useState<Set<number>>(new Set());
@@ -160,7 +161,7 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
   // --- Filter Logic ---
   const filteredIssues = useMemo(() => {
     const issues = result.issues || [];
-    return issues
+    let filtered = issues
     .map((issue, idx) => ({ ...issue, originalIndex: idx }))
     .filter(issue => !resolvedIndices.has(issue.originalIndex))
     .filter(issue => {
@@ -170,7 +171,34 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
         }
         return issue.type === activeFilter;
     });
-  }, [result.issues, resolvedIndices, activeFilter]);
+    
+    // Sort issues based on selected criteria
+    filtered.sort((a, b) => {
+      if (sortBy === 'severity') {
+        // Severity order: SENSITIVE > PRIVACY > TYPO > GRAMMAR > PUNCTUATION > STYLE
+        const severityOrder = {
+          [IssueType.SENSITIVE]: 0,
+          [IssueType.PRIVACY]: 1,
+          [IssueType.TYPO]: 2,
+          [IssueType.GRAMMAR]: 3,
+          [IssueType.PUNCTUATION]: 4,
+          [IssueType.FORMAT]: 5,
+          [IssueType.STYLE]: 6,
+          [IssueType.SUGGESTION]: 7
+        };
+        return severityOrder[a.type] - severityOrder[b.type];
+      } else if (sortBy === 'position') {
+        // Sort by original position in text
+        return a.originalIndex - b.originalIndex;
+      } else if (sortBy === 'type') {
+        // Sort by issue type
+        return a.type.localeCompare(b.type);
+      }
+      return 0;
+    });
+    
+    return filtered;
+  }, [result.issues, resolvedIndices, activeFilter, sortBy]);
 
   // --- Scroll Handlers ---
 
@@ -724,6 +752,30 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
     [IssueType.STYLE]: currentUnresolved.filter(i => i.type === IssueType.STYLE || i.type === IssueType.SUGGESTION).length,
   };
 
+  // Detailed statistics
+  const statistics = useMemo(() => {
+    const totalIssues = result.issues?.length || 0;
+    const resolvedIssues = totalIssues - currentUnresolved.length;
+    const resolutionRate = totalIssues > 0 ? Math.round((resolvedIssues / totalIssues) * 100) : 0;
+    
+    // Calculate issue distribution
+    const distribution = Object.entries(counts)
+      .filter(([key]) => key !== 'all')
+      .map(([type, count]) => ({
+        type,
+        count,
+        percentage: totalIssues > 0 ? Math.round((count / totalIssues) * 100) : 0
+      }))
+      .filter(item => item.count > 0);
+    
+    return {
+      totalIssues,
+      resolvedIssues,
+      resolutionRate,
+      distribution
+    };
+  }, [result.issues, currentUnresolved.length, counts]);
+
   const FilterButton = ({ type, label, count, colorClass }: { type: 'all' | IssueType, label: string, count: number, colorClass: string }) => (
     <button
       onClick={() => setActiveFilter(type)}
@@ -984,37 +1036,119 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
             <span className="font-medium text-slate-900 mr-2">总结:</span>
             {result.summary}
           </p>
+          
+          {/* Detailed Statistics */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
+            <div className="bg-slate-50 p-2 rounded-lg">
+              <p className="text-xs text-slate-500">总问题数</p>
+              <p className="font-semibold text-slate-900">{statistics.totalIssues}</p>
+            </div>
+            <div className="bg-slate-50 p-2 rounded-lg">
+              <p className="text-xs text-slate-500">已解决</p>
+              <p className="font-semibold text-green-600">{statistics.resolvedIssues}</p>
+            </div>
+            <div className="bg-slate-50 p-2 rounded-lg">
+              <p className="text-xs text-slate-500">解决率</p>
+              <p className="font-semibold text-blue-600">{statistics.resolutionRate}%</p>
+            </div>
+            <div className="bg-slate-50 p-2 rounded-lg">
+              <p className="text-xs text-slate-500">待处理</p>
+              <p className="font-semibold text-amber-600">{currentUnresolved.length}</p>
+            </div>
+          </div>
+          
+          {/* Issue Distribution */}
+          {statistics.distribution.length > 0 && (
+            <div className="mt-3">
+              <p className="text-xs font-medium text-slate-700 mb-2">问题分布</p>
+              <div className="space-y-1">
+                {statistics.distribution.map((item) => {
+                  const typeLabels: Record<string, string> = {
+                    [IssueType.SENSITIVE]: "敏感/合规",
+                    [IssueType.PRIVACY]: "隐私安全",
+                    [IssueType.FORMAT]: "格式/字体",
+                    [IssueType.TYPO]: "错别字",
+                    [IssueType.GRAMMAR]: "语病",
+                    [IssueType.PUNCTUATION]: "标点",
+                    [IssueType.STYLE]: "建议"
+                  };
+                  
+                  const colorMap: Record<string, string> = {
+                    [IssueType.SENSITIVE]: "bg-rose-500",
+                    [IssueType.PRIVACY]: "bg-orange-500",
+                    [IssueType.FORMAT]: "bg-slate-500",
+                    [IssueType.TYPO]: "bg-red-500",
+                    [IssueType.GRAMMAR]: "bg-amber-500",
+                    [IssueType.PUNCTUATION]: "bg-blue-500",
+                    [IssueType.STYLE]: "bg-purple-500"
+                  };
+                  
+                  return (
+                    <div key={item.type} className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full bg-slate-300"></div>
+                      <span className="text-xs text-slate-600 flex-1">{typeLabels[item.type] || item.type}</span>
+                      <span className="text-xs font-medium text-slate-700">{item.count} ({item.percentage}%)</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col flex-1 lg:mt-4 lg:bg-slate-50 lg:rounded-xl lg:border lg:border-slate-200 overflow-hidden bg-white">
            <div className="p-4 border-b border-slate-200 bg-white shrink-0">
-             <div className="flex items-center justify-between mb-3">
+             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
                <h3 className="font-semibold text-slate-700 flex items-center gap-2">
                  <AlertTriangle className="w-5 h-5 text-amber-500" />
                  问题列表
                </h3>
-               {filteredIssues.length > 0 && (
-                 <div className="flex items-center gap-2">
-                    <button
-                        onClick={() => handleBatchAction('accept')}
-                        className="flex items-center gap-1 text-xs font-medium text-green-700 bg-green-50 hover:bg-green-100 px-2 py-1 rounded transition-colors"
-                        title="采纳当前列表中的所有建议"
-                    >
-                        <CheckCheck className="w-3.5 h-3.5" />
-                        <span className="hidden xl:inline">全部采纳</span>
-                        <span className="xl:hidden">采纳</span>
-                    </button>
-                    <button
-                        onClick={() => handleBatchAction('ignore')}
-                        className="flex items-center gap-1 text-xs font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 px-2 py-1 rounded transition-colors"
-                        title="忽略当前列表中的所有问题"
-                    >
-                        <ListX className="w-3.5 h-3.5" />
-                         <span className="hidden xl:inline">全部忽略</span>
-                         <span className="xl:hidden">忽略</span>
-                    </button>
+               <div className="flex flex-wrap items-center gap-2">
+                 {/* Sort Options */}
+                 <div className="flex bg-slate-100 p-0.5 rounded-lg">
+                   <button
+                     onClick={() => setSortBy('position')}
+                     className={`px-2 py-1 text-xs font-medium rounded transition-colors ${sortBy === 'position' ? 'bg-white text-brand-600 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
+                   >
+                     位置
+                   </button>
+                   <button
+                     onClick={() => setSortBy('severity')}
+                     className={`px-2 py-1 text-xs font-medium rounded transition-colors ${sortBy === 'severity' ? 'bg-white text-brand-600 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
+                   >
+                     严重程度
+                   </button>
+                   <button
+                     onClick={() => setSortBy('type')}
+                     className={`px-2 py-1 text-xs font-medium rounded transition-colors ${sortBy === 'type' ? 'bg-white text-brand-600 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
+                   >
+                     类型
+                   </button>
                  </div>
-               )}
+                 
+                 {filteredIssues.length > 0 && (
+                   <div className="flex items-center gap-2">
+                      <button
+                          onClick={() => handleBatchAction('accept')}
+                          className="flex items-center gap-1 text-xs font-medium text-green-700 bg-green-50 hover:bg-green-100 px-2 py-1 rounded transition-colors"
+                          title="采纳当前列表中的所有建议"
+                      >
+                          <CheckCheck className="w-3.5 h-3.5" />
+                          <span className="hidden xl:inline">全部采纳</span>
+                          <span className="xl:hidden">采纳</span>
+                      </button>
+                      <button
+                          onClick={() => handleBatchAction('ignore')}
+                          className="flex items-center gap-1 text-xs font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 px-2 py-1 rounded transition-colors"
+                          title="忽略当前列表中的所有问题"
+                      >
+                          <ListX className="w-3.5 h-3.5" />
+                           <span className="hidden xl:inline">全部忽略</span>
+                           <span className="xl:hidden">忽略</span>
+                      </button>
+                   </div>
+                 )}
+               </div>
              </div>
              
              <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">

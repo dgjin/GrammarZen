@@ -101,16 +101,22 @@ export const initializeUserConfig = async (userId: string, initialData?: UserCon
       sensitive_words: initialData?.sensitive_words || []
   };
 
-  // Insert initial record. 
-  const { error } = await supabase
-    .from('grammarzen_user_configs')
-    .upsert(
-      payload,
-      { onConflict: 'user_id', ignoreDuplicates: true }
-    );
-    
-  if (error) {
-    console.error("Failed to initialize user config:", error);
+  try {
+    // Insert initial record. 
+    const { error } = await supabase
+      .from('grammarzen_user_configs')
+      .upsert(
+        payload,
+        { onConflict: 'user_id', ignoreDuplicates: true }
+      );
+      
+    if (error) {
+      console.error("Failed to initialize user config:", error);
+      // 即使初始化失败，也不影响用户登录
+    }
+  } catch (error) {
+    console.error("Error in initializeUserConfig:", error);
+    // 捕获所有错误，确保用户注册流程不会中断
   }
 };
 

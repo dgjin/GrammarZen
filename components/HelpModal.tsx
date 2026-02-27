@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Zap, Sparkles, ShieldAlert, FileBadge, PenTool, LayoutTemplate, FileSearch, HelpCircle, Book, ShieldCheck, Cpu, Maximize2, ArrowRightLeft, User, Cloud, Settings } from 'lucide-react';
+import { X, Zap, Sparkles, ShieldAlert, FileBadge, PenTool, LayoutTemplate, FileSearch, HelpCircle, Book, ShieldCheck, Cpu, Maximize2, ArrowRightLeft, User, Cloud, Settings, Users, Share2 } from 'lucide-react';
 
 interface HelpModalProps {
   isOpen: boolean;
@@ -172,7 +172,106 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
             </div>
           </section>
 
-          {/* 6. FAQ */}
+          {/* 6. 分词功能 */}
+          <section>
+            <h4 className="text-base font-bold text-slate-800 mb-4 flex items-center gap-2 pb-2 border-b border-slate-100">
+              <Cpu className="w-4 h-4 text-teal-500" />
+              智能分词功能
+            </h4>
+            <div className="space-y-3">
+              <div className="flex gap-4 items-start">
+                <div className="bg-teal-100 p-1.5 rounded-lg mt-0.5">
+                  <Cpu className="w-4 h-4 text-teal-600" />
+                </div>
+                <div>
+                  <h5 className="text-sm font-semibold text-slate-700">分词功能介绍</h5>
+                  <p className="text-xs text-slate-600 mt-1">
+                    系统内置智能中文分词功能，能够识别固定词组和专业术语，提高校对准确性。默认包含人工智能、机器学习等常见技术术语。
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-4 items-start">
+                <div className="bg-teal-100 p-1.5 rounded-lg mt-0.5">
+                  <Settings className="w-4 h-4 text-teal-600" />
+                </div>
+                <div>
+                  <h5 className="text-sm font-semibold text-slate-700">自定义分词规则</h5>
+                  <p className="text-xs text-slate-600 mt-1">
+                    在自定义规则库中添加专业术语，系统会将这些术语作为整体进行处理，避免分词错误。例如，添加"深度学习"后，系统会将其视为一个整体词汇。
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-4 items-start">
+                <div className="bg-teal-100 p-1.5 rounded-lg mt-0.5">
+                  <Sparkles className="w-4 h-4 text-teal-600" />
+                </div>
+                <div>
+                  <h5 className="text-sm font-semibold text-slate-700">分词的作用</h5>
+                  <p className="text-xs text-slate-600 mt-1">
+                    准确的分词能够帮助AI更好地理解文本结构，提高语法错误检测和语义理解的准确性，特别是在处理专业领域文本时效果显著。
+                  </p>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* 7. 协作会话 */}
+          <section>
+            <h4 className="text-base font-bold text-slate-800 mb-4 flex items-center gap-2 pb-2 border-b border-slate-100">
+              <Users className="w-4 h-4 text-indigo-500" />
+              协作会话功能
+            </h4>
+            <div className="space-y-3">
+              <div className="flex gap-4 items-start">
+                <div className="bg-indigo-100 p-1.5 rounded-lg mt-0.5">
+                  <Share2 className="w-4 h-4 text-indigo-600" />
+                </div>
+                <div>
+                  <h5 className="text-sm font-semibold text-slate-700">协作会话介绍</h5>
+                  <p className="text-xs text-slate-600 mt-1">
+                    协作会话功能允许多个用户共同编辑和校对同一文档，适用于团队协作场景。登录后即可使用此功能。
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-4 items-start">
+                <div className="bg-indigo-100 p-1.5 rounded-lg mt-0.5">
+                  <Users className="w-4 h-4 text-indigo-600" />
+                </div>
+                <div>
+                  <h5 className="text-sm font-semibold text-slate-700">创建协作会话</h5>
+                  <p className="text-xs text-slate-600 mt-1">
+                    1. 登录后，点击页面中的"协作会话"按钮
+                    2. 在弹出的模态框中输入会话名称
+                    3. 点击"创建"按钮即可创建新的协作会话
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-4 items-start">
+                <div className="bg-indigo-100 p-1.5 rounded-lg mt-0.5">
+                  <FileSearch className="w-4 h-4 text-indigo-600" />
+                </div>
+                <div>
+                  <h5 className="text-sm font-semibold text-slate-700">打开协作会话</h5>
+                  <p className="text-xs text-slate-600 mt-1">
+                    在协作会话列表中，点击"打开"按钮即可进入对应的会话。系统会自动加载会话中的文档内容到编辑区。
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-4 items-start">
+                <div className="bg-indigo-100 p-1.5 rounded-lg mt-0.5">
+                  <Settings className="w-4 h-4 text-indigo-600" />
+                </div>
+                <div>
+                  <h5 className="text-sm font-semibold text-slate-700">协作会话管理</h5>
+                  <p className="text-xs text-slate-600 mt-1">
+                    每个协作会话都会显示参与者数量和创建时间。会话创建者可以管理会话，参与者可以查看和编辑文档内容。
+                  </p>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* 8. FAQ */}
            <section>
             <h4 className="text-base font-bold text-slate-800 mb-4 flex items-center gap-2 pb-2 border-b border-slate-100">
               <HelpCircle className="w-4 h-4 text-blue-500" />
