@@ -2,6 +2,17 @@ import React from 'react';
 import { Issue, IssueType } from '../types';
 import { AlertCircle, Type, Sparkles, ShieldAlert, Check, X, ShieldPlus, MessageSquareQuote, Lock, LayoutTemplate } from 'lucide-react';
 
+// Helper function to mask sensitive content
+const maskSensitiveContent = (content: string): string => {
+  if (!content) return content;
+  // For content longer than 2 characters, show first and last character, mask the rest
+  if (content.length > 2) {
+    return content[0] + '*'.repeat(content.length - 2) + content[content.length - 1];
+  }
+  // For content 2 characters or less, mask all
+  return '*'.repeat(content.length);
+};
+
 interface IssueCardProps {
   id?: string;
   issue: Issue;
@@ -92,6 +103,11 @@ const getIssueConfig = (type: IssueType) => {
 export const IssueCard: React.FC<IssueCardProps> = ({ id, issue, isSelected, onClick, onAccept, onIgnore, onWhitelist }) => {
   const config = getIssueConfig(issue.type);
   const Icon = config.icon;
+  const isSensitive = issue.type === IssueType.SENSITIVE || issue.type === IssueType.PRIVACY;
+  const orig = typeof issue.original === 'string' ? issue.original : String(issue.original ?? '');
+  const sugg = typeof issue.suggestion === 'string' ? issue.suggestion : String(issue.suggestion ?? '');
+  const originalContent = isSensitive ? maskSensitiveContent(orig) : orig;
+  const suggestionContent = isSensitive ? maskSensitiveContent(sugg) : sugg;
 
   return (
     <div 
@@ -108,22 +124,22 @@ export const IssueCard: React.FC<IssueCardProps> = ({ id, issue, isSelected, onC
       <div className="flex items-start justify-between mb-3">
         <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${config.badgeBg} ${config.badgeText} ${config.badgeBorder}`}>
           <Icon className="w-3.5 h-3.5" />
-          <span>{config.label}</span>
+          <span>{String(config.label)}</span>
         </div>
       </div>
       
       <div className="flex items-center gap-3 mb-3 text-sm">
         <div className="flex-1 bg-red-50/80 text-red-700 px-3 py-2 rounded-md line-through decoration-red-400/50 decoration-2 break-words border border-red-100/50">
-          {issue.original}
+          {typeof originalContent === 'string' ? originalContent : String(originalContent ?? '')}
         </div>
         <span className="text-slate-300">→</span>
         <div className="flex-1 bg-green-50/80 text-green-700 px-3 py-2 rounded-md font-medium break-words border border-green-100/50">
-          {issue.suggestion}
+          {typeof suggestionContent === 'string' ? suggestionContent : String(suggestionContent ?? '')}
         </div>
       </div>
 
       <p className="text-xs text-slate-500 leading-relaxed pl-1 border-l-2 border-slate-100 py-0.5">
-        {issue.reason}
+        {typeof issue.reason === 'string' ? issue.reason : String(issue.reason ?? '')}
       </p>
 
       {/* Action Toolbar */}

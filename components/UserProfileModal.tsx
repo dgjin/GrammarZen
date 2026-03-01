@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { updateUserProfile, uploadUserAvatar } from '../services/supabaseService';
-import { X, User, Lock, Mail, Camera, Loader2, LogOut, Save, CheckCircle, Upload } from 'lucide-react';
+import { updateUserProfile, uploadUserAvatar, saveUserApiKeys } from '../services/supabaseService';
+import { X, User, Lock, Mail, Camera, Loader2, LogOut, Save, CheckCircle, Upload, Key } from 'lucide-react';
 
 interface UserProfileModalProps {
   isOpen: boolean;
   onClose: () => void;
   user: any;
   onLogout: () => void;
+  onApiKeysSaved?: () => void;
 }
 
 const PRESET_AVATARS = [
@@ -17,11 +18,16 @@ const PRESET_AVATARS = [
   'https://api.dicebear.com/7.x/notionists/svg?seed=Milo'
 ];
 
-export const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onClose, user, onLogout }) => {
+export const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onClose, user, onLogout, onApiKeysSaved }) => {
   const [nickname, setNickname] = useState('');
   const [avatarUrl, setAvatarUrl] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [geminiApiKey, setGeminiApiKey] = useState('');
+  const [deepseekApiKey, setDeepseekApiKey] = useState('');
+  const [sparkApiKey, setSparkApiKey] = useState('');
+  const [kimiApiKey, setKimiApiKey] = useState('');
+  const [minmaxApiKey, setMinmaxApiKey] = useState('');
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
@@ -32,6 +38,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onCl
     if (user) {
       setNickname(user.user_metadata?.nickname || '');
       setAvatarUrl(user.user_metadata?.avatar_url || '');
+      setGeminiApiKey(''); // 不回显已保存的 Key，仅用于输入新值或留空清除
     }
   }, [user, isOpen]);
 
@@ -60,9 +67,22 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onCl
         avatarUrl: avatarUrl.trim(),
         password: password || undefined
       });
-      setMessage({ type: 'success', text: '个人信息更新成功！' });
+      await saveUserApiKeys(user.id, {
+        gemini: geminiApiKey,
+        deepseek: deepseekApiKey,
+        spark: sparkApiKey,
+        kimi: kimiApiKey,
+        minmax: minmaxApiKey
+      });
+      setMessage({ type: 'success', text: '个人信息与 API Key 已保存！' });
       setPassword('');
       setConfirmPassword('');
+      setGeminiApiKey('');
+      setDeepseekApiKey('');
+      setSparkApiKey('');
+      setKimiApiKey('');
+      setMinmaxApiKey('');
+      onApiKeysSaved?.();
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message || '更新失败，请重试' });
     } finally {
@@ -206,6 +226,53 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onCl
                         className="w-full pl-10 pr-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:outline-none transition-shadow"
                     />
                 </div>
+            </div>
+
+            <div className="pt-4 border-t border-slate-100 mt-4">
+                <h4 className="text-sm font-semibold text-slate-800 mb-3 flex items-center gap-1">
+                    <Key className="w-4 h-4 text-slate-500" /> 大模型 API Key
+                </h4>
+                <p className="text-xs text-slate-500 mb-2">填写后将加密保存至服务器，校对时优先使用您的 Key；留空并保存则清除已保存的 Key。</p>
+                <input 
+                    type="password" 
+                    value={geminiApiKey}
+                    onChange={(e) => setGeminiApiKey(e.target.value)}
+                    placeholder="Gemini API Key（默认模型，无需配置）"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:outline-none text-sm mb-3"
+                    autoComplete="off"
+                />
+                <input 
+                    type="password" 
+                    value={deepseekApiKey}
+                    onChange={(e) => setDeepseekApiKey(e.target.value)}
+                    placeholder="DeepSeek API Key（选填）"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:outline-none text-sm mb-3"
+                    autoComplete="off"
+                />
+                <input 
+                    type="password" 
+                    value={sparkApiKey}
+                    onChange={(e) => setSparkApiKey(e.target.value)}
+                    placeholder="科大讯飞星火 API Key（选填）"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:outline-none text-sm mb-3"
+                    autoComplete="off"
+                />
+                <input 
+                    type="password" 
+                    value={kimiApiKey}
+                    onChange={(e) => setKimiApiKey(e.target.value)}
+                    placeholder="Kimi (Moonshot) API Key（选填）"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:outline-none text-sm mb-3"
+                    autoComplete="off"
+                />
+                <input 
+                    type="password" 
+                    value={minmaxApiKey}
+                    onChange={(e) => setMinmaxApiKey(e.target.value)}
+                    placeholder="Min-Max API Key（选填）"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:outline-none text-sm mb-4"
+                    autoComplete="off"
+                />
             </div>
 
             <div className="pt-4 border-t border-slate-100 mt-4">

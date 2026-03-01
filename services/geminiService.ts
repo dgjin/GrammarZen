@@ -2,11 +2,11 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { ProofreadResult, IssueType, Issue } from "../types";
 import { parsePartialJson } from "./parsePartialJson";
 
-const geminiApiKey = process.env.API_KEY || '';
-const deepseekApiKey = process.env.DEEPSEEK_API_KEY || '';
-const sparkApiKey = process.env.SPARK_API_KEY || '';
-const kimiApiKey = process.env.KIMI_API_KEY || '';
-  const minmaxApiKey = process.env.MINMAX_API_KEY || '';
+const geminiApiKey = process.env.VITE_API_KEY || '';
+const deepseekApiKey = process.env.VITE_DEEPSEEK_API_KEY || '';
+const sparkApiKey = process.env.VITE_SPARK_API_KEY || '';
+const kimiApiKey = process.env.VITE_KIMI_API_KEY || '';
+const minmaxApiKey = process.env.VITE_MINMAX_API_KEY || '';
 
 // Initialize Gemini client (only used if Gemini model is selected)
 // Prevent crash if API Key is missing during module load
@@ -674,7 +674,8 @@ export const checkChineseText = async (
   userPrompt: string = "",
   polishingTone: string = "general", // Added tone for polishing
   industry: IndustryType = 'general', // Added industry template
-  onUpdate?: (partial: ProofreadResult) => void
+  onUpdate?: (partial: ProofreadResult) => void,
+  userApiKeys?: { gemini?: string, deepseek?: string, spark?: string, kimi?: string, minmax?: string }
 ): Promise<ProofreadResult> => {
   let rawResult: ProofreadResult;
 
@@ -874,7 +875,9 @@ export const checkChineseText = async (
         customRules,
         userPrompt,
         polishingTone,
-        chunkOnUpdate
+        industry,
+        chunkOnUpdate,
+        userApiKeys
       );
       results.push(chunkResult);
     }
@@ -884,10 +887,12 @@ export const checkChineseText = async (
   } else {
     // Original single chunk processing
     if (modelName.startsWith('gemini')) {
-      if (!geminiApiKey) throw new Error("Please configure Google API Key in .env");
+      const apiKey = userApiKeys?.gemini || geminiApiKey;
+      if (!apiKey) throw new Error("请配置 Gemini API Key：在 .env 中设置 VITE_API_KEY，或在个人中心填写并保存您的 API Key");
       
       try {
-        const resultStream = await googleAI.models.generateContentStream({
+        const client = apiKey ? new GoogleGenAI({ apiKey }) : googleAI;
+        const resultStream = await client.models.generateContentStream({
           model: modelName,
           contents: typeof enhancedContent === 'string' ? { parts: [{ text: enhancedContent }] } : { parts: enhancedContent },
           config: {
@@ -961,10 +966,11 @@ export const checkChineseText = async (
       }
     }
     else if (modelName.startsWith('deepseek')) {
-      if (!deepseekApiKey) throw new Error("未配置 DeepSeek API Key");
+      const apiKey = userApiKeys?.deepseek || deepseekApiKey;
+      if (!apiKey) throw new Error("未配置 DeepSeek API Key");
       rawResult = await callOpenAICompatibleStream(
         'https://api.deepseek.com/chat/completions',
-        deepseekApiKey,
+        apiKey,
         modelName,
         systemInstruction,
         enhancedContent,
@@ -972,7 +978,8 @@ export const checkChineseText = async (
       );
     }
     else if (modelName.startsWith('spark')) {
-      if (!sparkApiKey) throw new Error("未配置星火 API Key");
+      const apiKey = userApiKeys?.spark || sparkApiKey;
+      if (!apiKey) throw new Error("未配置星火 API Key");
       let sparkModelVersion = 'generalv3.5';
       switch (modelName) {
           case 'spark-ultra': sparkModelVersion = '4.0Ultra'; break;
@@ -982,7 +989,7 @@ export const checkChineseText = async (
       }
       rawResult = await callOpenAICompatibleStream(
         'https://spark-api-open.xf-yun.com/v1/chat/completions',
-        sparkApiKey,
+        apiKey,
         sparkModelVersion,
         systemInstruction,
         enhancedContent,
@@ -990,20 +997,22 @@ export const checkChineseText = async (
       );
     }
     else if (modelName.startsWith('moonshot')) {
-      if (!kimiApiKey) throw new Error("未配置 Kimi (Moonshot) API Key");
+      const apiKey = userApiKeys?.kimi || kimiApiKey;
+      if (!apiKey) throw new Error("未配置 Kimi (Moonshot) API Key");
       rawResult = await callOpenAICompatibleStream(
         'https://api.moonshot.cn/v1/chat/completions',
-        kimiApiKey,
+        apiKey,
         modelName,
         systemInstruction,
         enhancedContent,
         onUpdate
       );
     } else if (modelName.startsWith('min-max')) {
-      if (!minmaxApiKey) throw new Error("未配置 Min-Max API Key");
+      const apiKey = userApiKeys?.minmax || minmaxApiKey;
+      if (!apiKey) throw new Error("未配置 Min-Max API Key");
       rawResult = await callOpenAICompatibleStream(
         'https://api.minimax.chat/v1/text/chatcompletion',
-        minmaxApiKey,
+        apiKey,
         'abab5.5-chat',
         systemInstruction,
         enhancedContent,
@@ -1021,4 +1030,218 @@ export const checkChineseText = async (
   setCachedResult(cacheKey, finalResult);
   
   return finalResult;
+};
+
+// File summary interface
+export interface FileSummary {
+  summary: string;
+  keyPoints: string[];
+  mainTopics: string[];
+  conclusion?: string;
+  wordCount: number;
+  processingTime: number;
+}
+
+/**
+ * Generate summary for file content based on user prompt
+ */
+export const generateFileSummary = async (
+  content: string | Part[],
+  userPrompt: string = "",
+  modelName: string = 'gemini-3-flash-preview',
+  userApiKeys?: { gemini?: string, deepseek?: string, spark?: string, kimi?: string, minmax?: string }
+): Promise<FileSummary> => {
+  const startTime = Date.now();
+  
+  // Convert content to text if it's a Part array
+  let textContent = "";
+  if (typeof content === 'string') {
+    textContent = content;
+  } else {
+    textContent = content.map(p => p.text || "").join("\n");
+    if (content.some(p => p.inlineData)) {
+      textContent += "\n[注：用户上传了图片，摘要基于提取的文本内容]";
+    }
+  }
+  
+  // Build system instruction for summarization
+  let systemInstruction = `
+    你是一名专业的文档摘要专家。请根据用户提供的文件内容和提示词，生成一份全面、准确的摘要。
+    
+    【摘要要求】
+    1. **全面性**：覆盖文档的主要内容和关键信息
+    2. **准确性**：保持原文的核心观点和重要细节
+    3. **简洁性**：使用精炼的语言，避免冗余
+    4. **结构清晰**：按照逻辑层次组织摘要内容
+    
+    【输出格式】
+    请返回 JSON 格式，包含以下字段：
+    {
+      "summary": "文档的详细摘要",
+      "keyPoints": ["要点1", "要点2", "要点3"],
+      "mainTopics": ["主题1", "主题2", "主题3"],
+      "conclusion": "结论或建议（如果适用）",
+      "wordCount": 原文字数,
+      "processingTime": 处理时间（毫秒）
+    }
+  `;
+  
+  // Add user prompt if provided
+  if (userPrompt.trim()) {
+    systemInstruction += `
+    
+    【用户提示词】
+    ${userPrompt}
+    `;
+  }
+  
+  // Check if content is long and needs chunking
+  let summaryResult: FileSummary;
+  
+  if (textContent.length > 8000) {
+    // Split into chunks
+    const chunks = splitTextIntoChunks(textContent);
+    const chunkSummaries: FileSummary[] = [];
+    
+    for (const chunk of chunks) {
+      const chunkResult = await generateFileSummary(chunk, userPrompt, modelName, userApiKeys);
+      chunkSummaries.push(chunkResult);
+    }
+    
+    // Merge summaries
+    const mergedSummary = chunkSummaries.map(s => s.summary).join('\n\n');
+    const mergedKeyPoints = Array.from(new Set(chunkSummaries.flatMap(s => s.keyPoints)));
+    const mergedTopics = Array.from(new Set(chunkSummaries.flatMap(s => s.mainTopics)));
+    
+    summaryResult = {
+      summary: mergedSummary,
+      keyPoints: mergedKeyPoints,
+      mainTopics: mergedTopics,
+      conclusion: chunkSummaries.map(s => s.conclusion).filter(Boolean).join('\n\n'),
+      wordCount: textContent.length,
+      processingTime: Date.now() - startTime
+    };
+  } else {
+    // Process as single chunk
+    if (modelName.startsWith('gemini')) {
+      const apiKey = userApiKeys?.gemini || geminiApiKey;
+      if (!apiKey) throw new Error("请配置 Gemini API Key：在 .env 中设置 VITE_API_KEY，或在个人中心填写并保存您的 API Key");
+      
+      try {
+        const client = apiKey ? new GoogleGenAI({ apiKey }) : googleAI;
+        const response = await client.models.generateContent({
+          model: modelName,
+          contents: { parts: [{ text: textContent }] },
+          config: {
+            systemInstruction,
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                summary: { type: Type.STRING },
+                keyPoints: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING }
+                },
+                mainTopics: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING }
+                },
+                conclusion: { type: Type.STRING },
+                wordCount: { type: Type.NUMBER },
+                processingTime: { type: Type.NUMBER }
+              },
+              required: ["summary", "keyPoints", "mainTopics", "wordCount", "processingTime"]
+            }
+          }
+        });
+        
+        const jsonText = response.text;
+        if (!jsonText) throw new Error("Empty response from Gemini");
+        
+        let cleanJson = jsonText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+        const firstBrace = cleanJson.indexOf('{');
+        const lastBrace = cleanJson.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          cleanJson = cleanJson.substring(firstBrace, lastBrace + 1);
+        }
+        
+        summaryResult = JSON.parse(cleanJson) as FileSummary;
+      } catch (error) {
+        console.error("Gemini API Error for summarization:", error);
+        throw error;
+      }
+    } else {
+      // For other models, use OpenAI compatible API
+      const apiEndpoints: Record<string, string> = {
+        'deepseek-chat': 'https://api.deepseek.com/chat/completions',
+        'deepseek-reasoner': 'https://api.deepseek.com/chat/completions',
+        'spark-ultra': 'https://spark-api-open.xf-yun.com/v1/chat/completions',
+        'spark-max': 'https://spark-api-open.xf-yun.com/v1/chat/completions',
+        'spark-pro': 'https://spark-api-open.xf-yun.com/v1/chat/completions',
+        'spark-lite': 'https://spark-api-open.xf-yun.com/v1/chat/completions',
+        'moonshot-v1-8k': 'https://api.moonshot.cn/v1/chat/completions',
+        'moonshot-v1-32k': 'https://api.moonshot.cn/v1/chat/completions',
+        'moonshot-v1-128k': 'https://api.moonshot.cn/v1/chat/completions',
+        'min-max': 'https://api.minimax.chat/v1/text/chatcompletion'
+      };
+      
+      const apiKeys: Record<string, string> = {
+        'deepseek-chat': userApiKeys?.deepseek || deepseekApiKey,
+        'deepseek-reasoner': userApiKeys?.deepseek || deepseekApiKey,
+        'spark-ultra': userApiKeys?.spark || sparkApiKey,
+        'spark-max': userApiKeys?.spark || sparkApiKey,
+        'spark-pro': userApiKeys?.spark || sparkApiKey,
+        'spark-lite': userApiKeys?.spark || sparkApiKey,
+        'moonshot-v1-8k': userApiKeys?.kimi || kimiApiKey,
+        'moonshot-v1-32k': userApiKeys?.kimi || kimiApiKey,
+        'moonshot-v1-128k': userApiKeys?.kimi || kimiApiKey,
+        'min-max': userApiKeys?.minmax || minmaxApiKey
+      };
+      
+      const endpoint = apiEndpoints[modelName];
+      const apiKey = apiKeys[modelName];
+      
+      if (!endpoint || !apiKey) {
+        throw new Error(`Unsupported model or missing API key for summarization: ${modelName}`);
+      }
+      
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: modelName === 'min-max' ? 'abab5.5-chat' : modelName,
+          messages: [
+            { role: 'system', content: systemInstruction },
+            { role: 'user', content: textContent }
+          ],
+          response_format: { type: 'json_object' }
+        })
+      });
+      
+      if (!response.ok) {
+        const err = await response.text();
+        throw new Error(`API Error (${modelName}): ${err}`);
+      }
+      
+      const data = await response.json();
+      const content = data.choices[0]?.message?.content;
+      
+      if (!content) {
+        throw new Error("Empty response from API");
+      }
+      
+      let cleanJson = content.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+      summaryResult = JSON.parse(cleanJson) as FileSummary;
+    }
+  }
+  
+  // Update processing time
+  summaryResult.processingTime = Date.now() - startTime;
+  summaryResult.wordCount = textContent.length;
+  
+  return summaryResult;
 };

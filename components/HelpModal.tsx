@@ -55,17 +55,19 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
               智能校对模式
             </h4>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {modes.map((mode, idx) => (
+              {modes.map((mode, idx) => {
+                const Icon = mode.icon;
+                return (
                 <div key={idx} className="flex gap-3 p-3 rounded-lg border border-slate-100 bg-slate-50/30 hover:bg-white hover:shadow-sm hover:border-brand-100 transition-all">
                   <div className="shrink-0 mt-0.5">
-                    <mode.icon className="w-5 h-5 text-slate-500" />
+                    {Icon && <Icon className="w-5 h-5 text-slate-500" />}
                   </div>
                   <div>
                     <h5 className="text-sm font-semibold text-slate-700">{mode.label}</h5>
                     <p className="text-xs text-slate-500 leading-relaxed mt-1">{mode.desc}</p>
                   </div>
                 </div>
-              ))}
+              );})}
             </div>
           </section>
 

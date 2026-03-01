@@ -9,6 +9,7 @@ interface PolishingModalProps {
   onReplace: (newText: string) => void;
   modelName: string;
   initialTone?: string;
+  userGeminiApiKey?: string;
 }
 
 export const PolishingModal: React.FC<PolishingModalProps> = ({
@@ -17,7 +18,8 @@ export const PolishingModal: React.FC<PolishingModalProps> = ({
   selectedText,
   onReplace,
   modelName,
-  initialTone = 'general'
+  initialTone = 'general',
+  userGeminiApiKey
 }) => {
   const [result, setResult] = useState<string>('');
   const [loading, setLoading] = useState(false);
@@ -54,14 +56,16 @@ export const PolishingModal: React.FC<PolishingModalProps> = ({
         selectedText,
         'polishing',
         modelName,
-        [], [], [], // No specific rules/whitelist for quick polish
+        [], [], [],
         "请只针对这段文字进行润色，保持原意，使其更通顺优美。",
         currentTone,
+        'general',
         (partial) => {
             if (partial.correctedText) {
                 setResult(partial.correctedText);
             }
-        }
+        },
+        userGeminiApiKey
       );
     } catch (err: any) {
       setError("润色失败，请重试");

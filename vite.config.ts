@@ -29,11 +29,13 @@ export default defineConfig(({ mode }) => {
     },
     // Using define to replace process.env.KEY with the actual string value during build.
     define: {
-      'process.env.API_KEY': JSON.stringify(env.API_KEY || ''),
-      'process.env.DEEPSEEK_API_KEY': JSON.stringify(env.DEEPSEEK_API_KEY || ''),
-      'process.env.SPARK_API_KEY': JSON.stringify(env.SPARK_API_KEY || ''),
-      'process.env.SUPABASE_URL': JSON.stringify(env.SUPABASE_URL || ''),
-      'process.env.SUPABASE_ANON_KEY': JSON.stringify(env.SUPABASE_ANON_KEY || ''),
+      'process.env.VITE_API_KEY': JSON.stringify(env.VITE_API_KEY || ''),
+      'process.env.VITE_DEEPSEEK_API_KEY': JSON.stringify(env.VITE_DEEPSEEK_API_KEY || ''),
+      'process.env.VITE_SPARK_API_KEY': JSON.stringify(env.VITE_SPARK_API_KEY || ''),
+      'process.env.VITE_SUPABASE_URL': JSON.stringify(env.VITE_SUPABASE_URL || ''),
+      'process.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(env.VITE_SUPABASE_ANON_KEY || ''),
+      'process.env.VITE_KIMI_API_KEY': JSON.stringify(env.VITE_KIMI_API_KEY || ''),
+      'process.env.VITE_MINMAX_API_KEY': JSON.stringify(env.VITE_MINMAX_API_KEY || ''),
       // We do NOT define 'process.env': {} here because we handle it in index.html
       // This avoids potential conflicts with the specific replacements above.
     },

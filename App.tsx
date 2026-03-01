@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import mammoth from 'mammoth';
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
-import { checkChineseText, Part, CheckMode, IndustryType } from './services/geminiService';
+import { checkChineseText, Part, CheckMode, IndustryType, generateFileSummary, FileSummary } from './services/geminiService';
 import { ProofreadResult, LoadingState, RuleLibrary, HistoryRecord, Recommendation, CollaborationSession } from './types';
 import { ResultView } from './components/ResultView';
 import { RuleManagerModal } from './components/RuleManagerModal';
@@ -25,14 +25,15 @@ import {
   FileType, Sparkles, Zap, ShieldCheck, Trash2, Book, ShieldAlert, Cpu, 
   ChevronDown, FileBadge, PenTool, LayoutTemplate, Check, Loader2, FileSearch, 
   HelpCircle, MessageSquarePlus, LogIn, GraduationCap, Briefcase, Palette, Coffee, Layers, History,
-  Users, Share2, Lightbulb, BarChart2
+  Users, Share2, Lightbulb, BarChart2, CheckCheck
 } from 'lucide-react';
-import { supabase, loadUserConfig, loadRuleLibraries, saveWhitelist, saveSensitiveWords, addRuleLibrary, deleteRuleLibrary, saveHistoryRecord, loadHistory } from './services/supabaseService';
+import { supabase, loadUserConfig, loadRuleLibraries, saveWhitelist, saveSensitiveWords, addRuleLibrary, deleteRuleLibrary, saveHistoryRecord, loadHistory, loadUserApiKeys, UserApiKeys } from './services/supabaseService';
 
 // Configure PDF.js worker
 GlobalWorkerOptions.workerSrc = `https://esm.sh/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs`;
 
-const EXAMPLE_TEXT = "我们的产品质量非常优秀，深受客户们的喜爱。但是，在使用过程中，难免会出现一些小问题。比如，链接不稳定、界面卡顿等等。希望大家能够谅解。我们会竟快修复这些bug，保证给大家一个完美得体验。";
+const EXAMPLE_TEXT = `作者：小飞飞，撰写于6月31日。 
+  想当年，他所带领的军队以锐不可挡之势，横扫大江南北，可以说是在父兄基业上既往开来，成就了一番伟业。原本偏安一隅的小国，从他的手中变成了十三个州，国人对这位领袖的敬意由然而生。威望的增加、权利的扩张丝毫没有改变他原有的样样子，他迈步走进岳楼，回忆起在湖北省张家界市的一段往事。那是一个薄雾蒙蒙的清晨，在急促行军途中他与一位素未谋面的人相逢，虽然之后并没有太多故事，却至今难以忘却，正当他的思绪陷入过往，忽然一阵震天的马蹄声夹杂着士兵的喧闹传来，报："敌人来袭，我方战线危机，望将军火速驰援"。由于刚刚陷入过往的原因，他稍微愣了愣神，咆哮道："大军听令，即刻出发"！军令如山。成群的士兵迅速从营房中跑出在校场上整齐队列，方阵如虹、战马昂首、刀枪如林、战旗迎风飘扬，将士身上的盔甲在阳光照射下，闪耀着金属的光泽。看着这支曾跟着他南征北战的队伍，他默默翻身登上战马，走在队伍最前面。营房外的道路两旁站满了欢送的百姓，大家希望将军能带领着军队，再次创造奇迹。`;
 
 export interface Attachment {
   name: string;
@@ -100,6 +101,7 @@ export default function App() {
 
   // Data & Auth State
   const [user, setUser] = useState<any>(null);
+  const [userApiKeys, setUserApiKeys] = useState<UserApiKeys>({});
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [whitelist, setWhitelist] = useState<string[]>([]);
@@ -126,6 +128,13 @@ export default function App() {
   // Partial Polishing State
   const [selection, setSelection] = useState<{ text: string, top: number, left: number, start: number, end: number } | null>(null);
   const [showPolishingModal, setShowPolishingModal] = useState(false);
+  
+  // Summary State
+  const [summary, setSummary] = useState<FileSummary | null>(null);
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [summaryPrompt, setSummaryPrompt] = useState('');
+  const [showSummaryModal, setShowSummaryModal] = useState(false);
   
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -159,6 +168,14 @@ export default function App() {
         const config = await loadUserConfig(user?.id);
         setWhitelist(config.whitelist);
         setSensitiveWords(config.sensitive_words);
+
+        // Load user API keys (decrypted) for Gemini etc.
+        if (user) {
+          const keys = await loadUserApiKeys(user.id);
+          setUserApiKeys(keys);
+        } else {
+          setUserApiKeys({});
+        }
 
         // Load Rules
         const rules = await loadRuleLibraries(user?.id);
@@ -475,7 +492,8 @@ export default function App() {
         (partialResult) => {
            setLoadingState('streaming');
            setResult(partialResult);
-        }
+        },
+        userApiKeys
       );
       setResult(data);
       setLoadingState('success');
@@ -517,6 +535,47 @@ export default function App() {
       } else {
           setAttachment(null);
       }
+  };
+
+  // Summary Function
+  const handleGenerateSummary = async () => {
+    if (!inputText.trim() && !attachment) return;
+
+    setIsGeneratingSummary(true);
+    setSummaryError(null);
+
+    try {
+      let content: string | Part[];
+
+      // Decide what to send based on attachment
+      if (attachment && attachment.data) {
+        const textOnlyMimes = ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain', 'text/rtf', 'application/rtf'];
+        if (textOnlyMimes.includes(attachment.mimeType)) {
+             content = inputText || "请分析这份文件内容并生成摘要。";
+        } else {
+             content = [
+               { text: inputText || "请分析这份文件内容并生成摘要。" },
+               { inlineData: { mimeType: attachment.mimeType, data: attachment.data } }
+             ];
+        }
+      } else {
+        content = inputText;
+      }
+
+      const data = await generateFileSummary(
+        content,
+        summaryPrompt,
+        modelName,
+        userApiKeys
+      );
+      setSummary(data);
+      setShowSummaryModal(true);
+    } catch (err: any) {
+      console.error(err);
+      setSummaryError(`生成摘要失败: ${err.message || '服务暂时不可用'}`);
+    } finally {
+      setIsGeneratingSummary(false);
+    }
   };
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -720,39 +779,51 @@ export default function App() {
       if (mode === 'polishing') return 'bg-gradient-to-r from-teal-600 to-teal-500 hover:from-teal-500 hover:to-teal-400';
       if (mode === 'format') return 'bg-gradient-to-r from-slate-700 to-slate-600 hover:from-slate-600 hover:to-slate-500';
       if (mode === 'file_scan') return 'bg-gradient-to-r from-cyan-700 to-cyan-600 hover:from-cyan-600 hover:to-cyan-500';
-      return 'bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400';
+      return 'bg-gradient-to-r from-[#0D9488] to-[#14B8A6] hover:from-[#14B8A6] hover:to-[#0F766E]';
   };
 
   const charCount = inputText.length;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans">
+    <div className="min-h-screen bg-[#F0FDFA] text-[#0F172A] flex flex-col font-sans">
+      <style>{`
+        @media (prefers-reduced-motion: reduce) {
+          *,
+          *::before,
+          *::after {
+            animation-duration: 0.01ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.01ms !important;
+            scroll-behavior: auto !important;
+          }
+        }
+      `}</style>
       {/* Header */}
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-10">
+      <header className="bg-white border-b border-teal-100 sticky top-0 z-10 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="bg-brand-600 p-2 rounded-lg">
+            <div className="bg-[#0D9488] p-2 rounded-lg shadow-md transition-all hover:shadow-lg">
               <BookOpenCheck className="w-6 h-6 text-white" />
             </div>
-            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-brand-700 to-brand-500">
+            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-[#0D9488] to-[#14B8A6]">
               GrammarZen
             </h1>
-            <span className="hidden sm:inline-block text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full border border-slate-200 ml-2">
-              中文智能校对
+            <span className="hidden sm:inline-block text-xs bg-teal-50 text-[#0F172A] px-2 py-0.5 rounded-full border border-teal-100 ml-2">
+                中文智能校对
             </span>
           </div>
           <div className="flex items-center gap-2">
              <button
                 onClick={() => setShowHelpModal(true)}
-                className="text-xs text-slate-500 hover:text-brand-600 flex items-center gap-1 transition-colors px-3 py-1.5 rounded-full hover:bg-slate-50 border border-transparent hover:border-slate-200"
+                className="text-xs text-slate-600 hover:text-[#0D9488] flex items-center gap-1 transition-colors duration-200 px-3 py-1.5 rounded-full hover:bg-teal-50 border border-transparent hover:border-teal-100"
             >
                 <HelpCircle className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">帮助</span>
             </button>
-            <div className="w-px h-4 bg-slate-200 mx-1"></div>
+            <div className="w-px h-4 bg-teal-100 mx-1"></div>
             <button
                 onClick={() => setShowRuleManager(true)}
-                className="text-xs text-slate-600 hover:text-brand-600 flex items-center gap-1 transition-colors px-3 py-1.5 rounded-full hover:bg-slate-50 border border-transparent hover:border-slate-200"
+                className="text-xs text-slate-600 hover:text-[#0D9488] flex items-center gap-1 transition-colors duration-200 px-3 py-1.5 rounded-full hover:bg-teal-50 border border-transparent hover:border-teal-100"
             >
                 <Book className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">规则库</span>
@@ -761,7 +832,7 @@ export default function App() {
             {user && (
                 <button 
                     onClick={() => setShowHistoryModal(true)} 
-                    className="text-xs text-slate-600 hover:text-brand-600 flex items-center gap-1 transition-colors px-3 py-1.5 rounded-full hover:bg-slate-50 border border-transparent hover:border-slate-200"
+                    className="text-xs text-slate-600 hover:text-[#0D9488] flex items-center gap-1 transition-colors duration-200 px-3 py-1.5 rounded-full hover:bg-teal-50 border border-transparent hover:border-teal-100"
                 >
                     <History className="w-3.5 h-3.5" />
                     <span className="hidden sm:inline">历史</span>
@@ -770,7 +841,7 @@ export default function App() {
 
             <button 
                 onClick={() => setShowSensitiveModal(true)} 
-                className="text-xs text-rose-600 hover:text-rose-700 flex items-center gap-1 transition-colors px-3 py-1.5 rounded-full hover:bg-rose-50 border border-transparent hover:border-rose-100"
+                className="text-xs text-rose-600 hover:text-rose-700 flex items-center gap-1 transition-colors duration-200 px-3 py-1.5 rounded-full hover:bg-rose-50 border border-transparent hover:border-rose-100"
             >
                 <ShieldAlert className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">敏感词</span>
@@ -778,30 +849,30 @@ export default function App() {
             </button>
             <button 
                 onClick={() => setShowWhitelistModal(true)} 
-                className="text-xs text-slate-500 hover:text-brand-600 flex items-center gap-1 transition-colors px-3 py-1.5 rounded-full hover:bg-slate-50 border border-transparent hover:border-slate-200"
+                className="text-xs text-slate-600 hover:text-[#0D9488] flex items-center gap-1 transition-colors duration-200 px-3 py-1.5 rounded-full hover:bg-teal-50 border border-transparent hover:border-teal-100"
             >
                 <ShieldCheck className="w-3.5 h-3.5" />
                 <span className="hidden sm:inline">白名单</span>
-                <span className="bg-slate-100 text-slate-600 px-1.5 rounded-full text-[10px] ml-0.5">{whitelist.length}</span>
+                <span className="bg-teal-100 text-[#0D9488] px-1.5 rounded-full text-[10px] ml-0.5">{whitelist.length}</span>
             </button>
             
-            <div className="w-px h-4 bg-slate-200 mx-1"></div>
+            <div className="w-px h-4 bg-teal-100 mx-1"></div>
 
             {user ? (
                <div className="flex items-center gap-2 ml-1">
                  <button 
                     onClick={() => setShowProfileModal(true)}
-                    className="flex items-center gap-2 px-2 py-1 rounded-full hover:bg-slate-100 transition-colors group"
+                    className="flex items-center gap-2 px-2 py-1 rounded-full hover:bg-teal-50 transition-colors duration-200 group cursor-pointer"
                     title="个人中心"
                  >
-                    <div className="w-8 h-8 bg-brand-100 text-brand-600 rounded-full flex items-center justify-center font-bold text-xs overflow-hidden border border-transparent group-hover:border-brand-200">
+                    <div className="w-8 h-8 bg-teal-100 text-[#0D9488] rounded-full flex items-center justify-center font-bold text-xs overflow-hidden border border-transparent group-hover:border-teal-200 transition-all duration-200">
                         {user.user_metadata?.avatar_url ? (
-                            <img src={user.user_metadata.avatar_url} alt="Avatar" className="w-full h-full object-cover" />
+                            <img src={user.user_metadata.avatar_url} alt={`${user.user_metadata?.nickname || '用户'} 的头像`} className="w-full h-full object-cover" />
                         ) : (
                             user.user_metadata?.nickname?.charAt(0).toUpperCase() || user.email?.charAt(0).toUpperCase()
                         )}
                     </div>
-                    <span className="text-xs font-medium text-slate-600 group-hover:text-brand-700 max-w-[80px] truncate hidden sm:block">
+                    <span className="text-xs font-medium text-slate-700 group-hover:text-[#0D9488] max-w-[80px] truncate hidden sm:block">
                         {user.user_metadata?.nickname || '用户'}
                     </span>
                  </button>
@@ -809,7 +880,7 @@ export default function App() {
             ) : (
                 <button
                     onClick={() => setShowAuthModal(true)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 text-white rounded-full text-xs font-medium hover:bg-slate-800 transition-all shadow-sm ml-1"
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-[#F97316] text-white rounded-full text-xs font-medium hover:bg-[#EA580C] transition-all duration-200 shadow-md hover:shadow-lg ml-1 cursor-pointer"
                 >
                     <LogIn className="w-3.5 h-3.5" />
                     登录/注册
@@ -825,8 +896,8 @@ export default function App() {
         
         {loadingState === 'idle' && !result && (
           <div className="text-center max-w-2xl mx-auto mb-10 animate-fade-in-up">
-            <h2 className="text-3xl font-bold text-slate-900 mb-4 tracking-tight">
-              让你的文字更<span className="text-brand-600">专业</span>、更<span className="text-brand-600">流畅</span>
+            <h2 className="text-3xl font-bold text-[#0F172A] mb-4 tracking-tight">
+              让你的文字更<span className="text-[#0D9488]">专业</span>、更<span className="text-[#0D9488]">流畅</span>
             </h2>
             <p className="text-slate-600 text-lg mb-8">
               支持 Google Gemini, DeepSeek, 讯飞星火等多模型，为您提供高精度校对。
@@ -835,50 +906,50 @@ export default function App() {
         )}
 
         <div className={`transition-all duration-700 ease-in-out transform ${result ? 'mb-8 translate-y-0' : 'mb-0'}`}>
-          <div className={`bg-white rounded-xl shadow-sm border overflow-hidden relative group focus-within:ring-2 focus-within:ring-brand-500/20 focus-within:border-brand-500 transition-all ${isBusy ? 'border-brand-300 shadow-md ring-2 ring-brand-100' : 'border-slate-200'}`}>
+          <div className={`bg-white rounded-xl shadow-md border overflow-hidden relative group focus-within:ring-2 focus-within:ring-[#0D9488]/20 focus-within:border-[#0D9488] transition-all ${isBusy ? 'border-[#14B8A6] shadow-lg ring-2 ring-[#14B8A6]/20' : 'border-teal-100'}`}>
             
             {isUploading && (
               <div className="absolute inset-0 z-30 bg-white/90 backdrop-blur-sm flex flex-col items-center justify-center animate-fade-in">
-                 <div className="w-16 h-16 bg-brand-50 rounded-full flex items-center justify-center mb-4 shadow-sm border border-brand-100">
+                 <div className="w-16 h-16 bg-teal-50 rounded-full flex items-center justify-center mb-6 shadow-sm border border-teal-100">
                     {progressLabel === '上传' ? (
-                       <Upload className="w-8 h-8 text-brand-600 animate-bounce" />
+                       <Upload className="w-8 h-8 text-[#0D9488] animate-bounce" />
                     ) : (
-                       <Loader2 className="w-8 h-8 text-brand-600 animate-spin" />
+                       <Loader2 className="w-8 h-8 text-[#0D9488] animate-spin" />
                     )}
                  </div>
-                 <div className="w-64 h-2 bg-slate-100 rounded-full overflow-hidden mb-3 ring-1 ring-slate-200">
+                 <div className="w-72 h-2 bg-teal-50 rounded-full overflow-hidden mb-4 ring-1 ring-teal-100">
                     <div 
-                        className="h-full bg-brand-500 transition-all duration-300 ease-out rounded-full shadow-[0_0_10px_rgba(14,165,233,0.4)]" 
+                        className="h-full bg-[#0D9488] transition-all duration-300 ease-out rounded-full shadow-[0_0_10px_rgba(13,148,136,0.4)]" 
                         style={{ width: `${uploadProgress}%` }}
                     />
                  </div>
                  <p className="text-sm font-medium text-slate-600 flex items-center gap-1">
                     正在{progressLabel}
-                    <span className="text-brand-600 font-bold ml-1">{uploadProgress}%</span>
+                    <span className="text-[#0D9488] font-bold ml-1">{uploadProgress}%</span>
                  </p>
               </div>
             )}
 
             {loadingState === 'loading' && (
               <div className="absolute inset-0 pointer-events-none z-10 rounded-xl overflow-hidden">
-                <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-transparent via-brand-500 to-transparent shadow-[0_0_15px_rgba(14,165,233,0.6)] animate-scan opacity-80"></div>
-                <div className="absolute inset-0 bg-brand-50/10 backdrop-blur-[0.5px] transition-all duration-500"></div>
+                <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-transparent via-[#0D9488] to-transparent shadow-[0_0_15px_rgba(13,148,136,0.6)] animate-scan opacity-80"></div>
+                <div className="absolute inset-0 bg-teal-50/10 backdrop-blur-[0.5px] transition-all duration-500"></div>
               </div>
             )}
 
             {attachment && (
-              <div className="mx-5 mt-5 mb-2 bg-slate-50 border border-slate-200 rounded-lg animate-fade-in flex flex-col">
+              <div className="mx-5 mt-5 mb-2 bg-teal-50 border border-teal-100 rounded-lg animate-fade-in flex flex-col">
                 <div className="p-3 flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     {getFileIcon(attachment.mimeType)}
                     <div>
-                      <p className="text-sm font-medium text-slate-700 truncate max-w-[200px] sm:max-w-md">{attachment.name}</p>
+                      <p className="text-sm font-medium text-[#0F172A] truncate max-w-[200px] sm:max-w-md">{attachment.name}</p>
                       <p className="text-xs text-slate-500">{(attachment.size / 1024).toFixed(1)} KB</p>
                     </div>
                   </div>
                   <button 
                     onClick={removeAttachment}
-                    className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"
+                    className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors duration-200"
                     disabled={isBusy}
                   >
                     <X className="w-5 h-5" />
@@ -891,8 +962,8 @@ export default function App() {
                         {attachment.visualData.map((data, idx) => {
                            const srcPrefix = attachment.mimeType === 'application/pdf' ? 'data:image/jpeg;base64,' : `data:${attachment.mimeType};base64,`;
                            return (
-                           <div key={idx} className="relative shrink-0 border border-slate-200 rounded-md overflow-hidden shadow-sm group">
-                              <img src={`${srcPrefix}${data}`} alt={`Page ${idx + 1}`} className="h-24 w-auto object-contain bg-white"/>
+                           <div key={idx} className="relative shrink-0 border border-teal-100 rounded-md overflow-hidden shadow-sm group transition-all duration-200 hover:shadow-md">
+                              <img src={`${srcPrefix}${data}`} alt={`${attachment.name} 第 ${idx + 1} 页`} className="h-24 w-auto object-contain bg-white"/>
                               <div className="absolute inset-0 bg-black/0 group-hover:bg-black/5 transition-colors pointer-events-none" />
                               <span className="absolute bottom-1 right-1 bg-black/60 text-white text-[9px] px-1.5 py-0.5 rounded shadow-sm backdrop-blur-[1px]">
                                 {attachment.mimeType === 'application/pdf' ? `P${idx + 1}` : '预览'}
@@ -902,7 +973,7 @@ export default function App() {
                         })}
                       </div>
                       <p className="text-[10px] text-slate-500 mt-2 flex items-center gap-1.5 px-0.5">
-                         <Check className="w-3 h-3 text-green-500" />
+                         <Check className="w-3 h-3 text-[#0D9488]" />
                          已提取 {attachment.visualData.length} 页内容用于多模态分析
                       </p>
                    </div>
@@ -918,7 +989,7 @@ export default function App() {
                   onMouseUp={handleMouseUp}
                   disabled={isBusy}
                   placeholder={attachment ? "（可选）输入对该文档的校对说明..." : "请输入或粘贴需要校对的中文文本..."}
-                  className={`w-full p-5 text-base sm:text-lg leading-relaxed resize-none outline-none text-slate-900 placeholder:text-slate-400 bg-transparent relative z-0 ${attachment ? 'h-32' : 'h-48 sm:h-64'} ${isBusy ? 'opacity-70' : ''} transition-opacity duration-300`}
+                  className={`w-full p-6 text-base sm:text-lg leading-relaxed resize-none outline-none text-[#0F172A] placeholder:text-slate-400 bg-transparent relative z-0 ${attachment ? 'h-32' : 'h-48 sm:h-64'} ${isBusy ? 'opacity-70' : ''} transition-opacity duration-300`}
                   spellCheck={false}
                 />
                 
@@ -934,7 +1005,7 @@ export default function App() {
                         <button
                             onMouseDown={(e) => e.preventDefault()}
                             onClick={() => setShowPolishingModal(true)}
-                            className="flex items-center gap-1.5 bg-teal-600 text-white px-3 py-1.5 rounded-full shadow-lg hover:bg-teal-700 transition-transform hover:scale-105 active:scale-95 text-sm font-medium border border-teal-500/50"
+                            className="flex items-center gap-1.5 bg-[#0D9488] text-white px-3 py-1.5 rounded-full shadow-lg hover:bg-[#0F766E] transition-all duration-200 hover:scale-105 active:scale-95 text-sm font-medium border border-[#14B8A6]/50 cursor-pointer"
                         >
                             <Sparkles className="w-3.5 h-3.5" />
                             AI 润色此段
@@ -943,12 +1014,12 @@ export default function App() {
                 )}
             </div>
             
-            <div className={`bg-slate-50 px-4 py-3 border-t border-slate-100 flex items-center justify-between flex-wrap gap-y-2 relative z-20 ${isBusy ? 'opacity-80 pointer-events-none' : ''}`}>
-               <div className="flex items-center gap-2">
+            <div className={`bg-slate-50 px-6 py-4 border-t border-slate-100 flex items-center justify-between flex-wrap gap-y-3 relative z-20 ${isBusy ? 'opacity-80 pointer-events-none' : ''}`}>
+               <div className="flex items-center gap-3">
                  <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".pdf,.docx,.jpg,.jpeg,.png,.webp,.txt,.rtf" className="hidden" disabled={isBusy} />
                  <button
                    onClick={() => fileInputRef.current?.click()}
-                   className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-slate-600 hover:text-brand-600 hover:bg-white bg-transparent rounded-lg transition-colors border border-transparent hover:border-slate-200 hover:shadow-sm"
+                   className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 hover:text-[#0D9488] hover:bg-white bg-transparent rounded-lg transition-all duration-200 border border-transparent hover:border-slate-200 hover:shadow-sm cursor-pointer"
                    title="上传 PDF, Word, TXT, RTF, 图片"
                    disabled={isBusy}
                  >
@@ -956,15 +1027,15 @@ export default function App() {
                    上传文档
                  </button>
 
-                  <div className="h-4 w-px bg-slate-200 mx-1"></div>
+                  <div className="h-4 w-px bg-slate-200 mx-2"></div>
 
                   <div className="relative group flex items-center gap-2">
-                      <Cpu className="w-4 h-4 text-slate-400 group-hover:text-brand-500 transition-colors" />
+                      <Cpu className="w-4 h-4 text-slate-400 group-hover:text-[#0D9488] transition-colors" />
                       <div className="relative">
                           <select
                               value={modelName}
                               onChange={(e) => setModelName(e.target.value)}
-                              className="appearance-none bg-transparent text-sm font-medium text-slate-600 hover:text-brand-600 cursor-pointer pr-6 focus:outline-none transition-colors max-w-[180px]"
+                              className="appearance-none bg-transparent text-sm font-medium text-slate-600 hover:text-[#0D9488] cursor-pointer pr-6 focus:outline-none transition-colors max-w-[180px]"
                               disabled={isBusy}
                           >
                               <optgroup label="Google Gemini">
@@ -1010,24 +1081,24 @@ export default function App() {
                      {charCount} 字
                   </div>
 
-                  <div className="flex items-center flex-wrap bg-white border border-slate-200 rounded-lg p-0.5">
-                    <button onClick={() => setMode('fast')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'fast' ? 'bg-slate-100 text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Zap className="w-3 h-3" />快速</button>
-                    <button onClick={() => setMode('professional')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'professional' ? 'bg-purple-100 text-purple-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Sparkles className="w-3 h-3" />深度</button>
-                    <button onClick={() => setMode('format')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'format' ? 'bg-slate-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`} title="推荐上传PDF/图片"><LayoutTemplate className="w-3 h-3" />格式</button>
-                    <button onClick={() => setMode('file_scan')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'file_scan' ? 'bg-cyan-100 text-cyan-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`} title="上传文件直接检测，不提取文字"><FileSearch className="w-3 h-3" />原文件</button>
-                    <button onClick={() => setMode('official')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'official' ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><FileBadge className="w-3 h-3" />公文</button>
-                    <button onClick={() => setMode('sensitive')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'sensitive' ? 'bg-rose-100 text-rose-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><ShieldAlert className="w-3 h-3" />合规</button>
-                    <button onClick={() => setMode('polishing')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all ${mode === 'polishing' ? 'bg-teal-100 text-teal-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><PenTool className="w-3 h-3" />润色</button>
+                  <div className="flex items-center flex-wrap bg-white border border-slate-200 rounded-lg p-1 gap-1">
+                    <button onClick={() => setMode('fast')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-all duration-200 cursor-pointer ${mode === 'fast' ? 'bg-slate-100 text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Zap className="w-3 h-3" />快速</button>
+                    <button onClick={() => setMode('professional')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-all duration-200 cursor-pointer ${mode === 'professional' ? 'bg-purple-100 text-purple-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Sparkles className="w-3 h-3" />深度</button>
+                    <button onClick={() => setMode('format')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-all duration-200 cursor-pointer ${mode === 'format' ? 'bg-slate-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-700'}`} title="推荐上传PDF/图片"><LayoutTemplate className="w-3 h-3" />格式</button>
+                    <button onClick={() => setMode('file_scan')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-all duration-200 cursor-pointer ${mode === 'file_scan' ? 'bg-cyan-100 text-cyan-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`} title="上传文件直接检测，不提取文字"><FileSearch className="w-3 h-3" />原文件</button>
+                    <button onClick={() => setMode('official')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-all duration-200 cursor-pointer ${mode === 'official' ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><FileBadge className="w-3 h-3" />公文</button>
+                    <button onClick={() => setMode('sensitive')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-all duration-200 cursor-pointer ${mode === 'sensitive' ? 'bg-rose-100 text-rose-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><ShieldAlert className="w-3 h-3" />合规</button>
+                    <button onClick={() => setMode('polishing')} disabled={isBusy} className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-all duration-200 cursor-pointer ${mode === 'polishing' ? 'bg-teal-100 text-teal-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><PenTool className="w-3 h-3" />润色</button>
                   </div>
 
                   {(inputText.length > 0 || attachment) && (
-                    <button onClick={clearInput} className="text-slate-400 hover:text-red-500 text-sm flex items-center gap-1 transition-colors" disabled={isBusy}><Eraser className="w-4 h-4" />清空</button>
+                    <button onClick={clearInput} className="text-slate-400 hover:text-red-500 text-sm flex items-center gap-1 transition-all duration-200 cursor-pointer" disabled={isBusy}><Eraser className="w-4 h-4" />清空</button>
                   )}
                </div>
             </div>
             
             {/* Industry Template Selector */}
-            <div className="px-4 py-2 bg-slate-50 border-t border-slate-100 flex items-center gap-3 animate-fade-in">
+            <div className="px-6 py-3 bg-slate-50 border-t border-slate-100 flex items-center gap-4 animate-fade-in">
                 <span className="text-xs font-medium text-slate-700 flex items-center gap-1">
                     <Briefcase className="w-3.5 h-3.5" />
                     行业模板:
@@ -1049,12 +1120,12 @@ export default function App() {
                                     onClick={() => setIndustry(item.id as IndustryType)}
                                     disabled={isBusy}
                                     className={`
-                                        flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition-all border
-                                        ${isSelected 
-                                            ? 'bg-white text-brand-700 border-brand-300 shadow-sm' 
-                                            : 'bg-transparent text-slate-600/70 border-transparent hover:bg-slate-100/50 hover:text-slate-800'
-                                        }
-                                    `}
+                            flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition-all duration-200 border cursor-pointer
+                            ${isSelected 
+                                ? 'bg-white text-[#0D9488] border-[#14B8A6] shadow-sm' 
+                                : 'bg-transparent text-slate-600/70 border-transparent hover:bg-slate-100/50 hover:text-slate-800'
+                            }
+                        `}
                                 >
                                     {item.label}
                                 </button>
@@ -1066,12 +1137,12 @@ export default function App() {
 
             {/* Smart Recommendations */}
             {recommendations.length > 0 && (
-              <div className="px-4 py-3 bg-indigo-50 border-t border-indigo-100 animate-fade-in">
-                  <div className="flex items-center gap-2 mb-2">
+              <div className="px-6 py-4 bg-indigo-50 border-t border-indigo-100 animate-fade-in">
+                  <div className="flex items-center gap-2 mb-3">
                       <Lightbulb className="w-4 h-4 text-indigo-600" />
                       <span className="text-xs font-medium text-indigo-700">智能推荐</span>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                       {recommendations.map(rec => (
                           <div key={rec.id} className="bg-white border border-indigo-200 rounded-lg p-3 shadow-sm hover:shadow transition-shadow">
                               <h4 className="text-xs font-medium text-indigo-800 mb-1">{rec.title}</h4>
@@ -1102,7 +1173,7 @@ export default function App() {
 
             {/* Collaboration Button */}
             {user && (
-              <div className="px-4 py-2 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
+              <div className="px-6 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
                   <div className="flex items-center gap-2">
                       <Users className="w-4 h-4 text-slate-500" />
                       <span className="text-xs font-medium text-slate-600">协作功能</span>
@@ -1114,7 +1185,7 @@ export default function App() {
                             setShowCollaborationModal(true);
                           }}
                           disabled={isBusy}
-                          className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-brand-600 hover:bg-white bg-transparent rounded-lg transition-colors border border-transparent hover:border-slate-200 hover:shadow-sm"
+                          className="flex items-center gap-1 px-4 py-2 text-xs font-medium text-slate-600 hover:text-[#0D9488] hover:bg-white bg-transparent rounded-lg transition-all duration-200 border border-transparent hover:border-slate-200 hover:shadow-sm cursor-pointer"
                       >
                           <Share2 className="w-3.5 h-3.5" />
                           协作会话
@@ -1125,7 +1196,7 @@ export default function App() {
             
             {/* Tone Selector for Polishing Mode */}
             {mode === 'polishing' && (
-              <div className="px-4 py-2 bg-teal-50 border-t border-teal-100 flex items-center gap-3 animate-fade-in">
+              <div className="px-6 py-3 bg-teal-50 border-t border-teal-100 flex items-center gap-4 animate-fade-in">
                   <span className="text-xs font-medium text-teal-700 flex items-center gap-1">
                       <Layers className="w-3.5 h-3.5" />
                       润色风格:
@@ -1146,7 +1217,7 @@ export default function App() {
                                   onClick={() => setPolishingTone(tone.id)}
                                   disabled={isBusy}
                                   className={`
-                                      flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition-all border
+                                      flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium transition-all duration-200 border cursor-pointer
                                       ${isSelected 
                                           ? 'bg-white text-teal-700 border-teal-300 shadow-sm' 
                                           : 'bg-transparent text-teal-600/70 border-transparent hover:bg-teal-100/50 hover:text-teal-800'
@@ -1167,23 +1238,61 @@ export default function App() {
              <div className="mt-3 flex flex-wrap gap-2 items-center animate-fade-in px-1">
                  <span className="text-xs font-medium text-slate-500 mr-1 flex items-center gap-1"><Book className="w-3 h-3" />应用规则:</span>
                  {ruleLibraries.map(lib => (
-                     <button key={lib.id} onClick={() => toggleLibrarySelection(lib.id)} disabled={isBusy} className={`text-xs px-2.5 py-1 rounded border transition-all ${selectedLibIds.has(lib.id) ? 'bg-brand-50 border-brand-200 text-brand-700 font-medium' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}>{lib.name}</button>
+                     <button key={lib.id} onClick={() => toggleLibrarySelection(lib.id)} disabled={isBusy} className={`text-xs px-2.5 py-1 rounded border transition-all duration-200 cursor-pointer ${selectedLibIds.has(lib.id) ? 'bg-teal-50 border-[#14B8A6] text-[#0D9488] font-medium' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}>{lib.name}</button>
                  ))}
              </div>
           )}
 
           <div className="mt-3 px-1 animate-fade-in">
              <div className="relative">
+                <label htmlFor="userPrompt" className="sr-only">特殊指令</label>
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><MessageSquarePlus className="h-4 w-4 text-slate-400" /></div>
-                <input type="text" value={userPrompt} onChange={(e) => setUserPrompt(e.target.value)} disabled={isBusy} className="block w-full pl-10 pr-3 py-2 border border-slate-200 rounded-lg leading-5 bg-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-brand-500 focus:border-brand-500 sm:text-sm transition-shadow shadow-sm" placeholder="（可选）输入本次校对的特殊指令，例如：‘语气更正式一点’、‘检查人名是否正确’..." />
+                <input id="userPrompt" type="text" value={userPrompt} onChange={(e) => setUserPrompt(e.target.value)} disabled={isBusy} className="block w-full pl-10 pr-3 py-2 border border-slate-200 rounded-lg leading-5 bg-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-[#0D9488] focus:border-[#0D9488] sm:text-sm transition-shadow shadow-sm" placeholder="（可选）输入本次校对的特殊指令，例如：‘语气更正式一点’、‘检查人名是否正确’..." />
              </div>
           </div>
 
-          <div className="mt-4 flex justify-center sm:justify-end">
+          <div className="mt-4 flex flex-col sm:flex-row gap-3 justify-center sm:justify-end">
+            {/* Summary Prompt Input */}
+            <div className="w-full sm:w-64">
+              <div className="relative">
+                <label htmlFor="summaryPrompt" className="sr-only">摘要提示词</label>
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><MessageSquarePlus className="h-4 w-4 text-slate-400" /></div>
+                <input 
+                  id="summaryPrompt"
+                  type="text" 
+                  value={summaryPrompt} 
+                  onChange={(e) => setSummaryPrompt(e.target.value)} 
+                  disabled={isBusy || isGeneratingSummary} 
+                  className="block w-full pl-10 pr-3 py-2 border border-slate-200 rounded-lg leading-5 bg-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-[#0D9488] focus:border-[#0D9488] sm:text-sm transition-shadow shadow-sm"
+                  placeholder="（可选）摘要提示词，例如：‘重点总结技术方案’、‘提取关键信息’..."
+                />
+              </div>
+            </div>
+            
+            {/* Summary Button */}
+            <button
+              onClick={handleGenerateSummary}
+              disabled={(!inputText.trim() && !attachment) || isBusy || isGeneratingSummary}
+              className="flex items-center gap-2 px-6 py-3 rounded-full text-slate-700 font-medium shadow-lg hover:shadow-xl hover:-translate-y-0.5 transition-all duration-200 bg-white border border-slate-200 hover:bg-slate-50 cursor-pointer"
+            >
+              {isGeneratingSummary ? (
+                <>
+                  <div className="w-5 h-5 border-2 border-slate-300 border-t-slate-700 rounded-full animate-spin" />
+                  <span>生成摘要中...</span>
+                </>
+              ) : (
+                <>
+                  <FileText className="w-5 h-5" />
+                  <span>生成摘要</span>
+                </>
+              )}
+            </button>
+            
+            {/* Check Button */}
             <button
               onClick={handleCheck}
-              disabled={(!inputText.trim() && !attachment) || isBusy}
-              className={`flex items-center gap-2 px-8 py-3 rounded-full text-white font-medium shadow-lg hover:shadow-xl hover:-translate-y-0.5 transition-all ${getButtonGradient()}`}
+              disabled={(!inputText.trim() && !attachment) || isBusy || isGeneratingSummary}
+              className={`flex items-center gap-2 px-8 py-3 rounded-full text-white font-medium shadow-lg hover:shadow-xl hover:-translate-y-0.5 transition-all duration-200 cursor-pointer ${getButtonGradient()}`}
             >
               {(loadingState === 'loading' || loadingState === 'streaming') ? (
                 <>
@@ -1201,9 +1310,16 @@ export default function App() {
         </div>
 
         {loadingState === 'error' && (
-          <div className="mt-6 p-4 bg-red-50 border border-red-100 rounded-lg flex items-center gap-3 text-red-700 animate-fade-in">
-            <AlertCircle className="w-5 h-5 shrink-0" />
-            <p>{error}</p>
+          <div className="mt-6 p-4 bg-red-50 border border-red-100 rounded-lg flex items-center gap-3 text-red-700 animate-fade-in shadow-sm">
+            <AlertCircle className="w-5 h-5 shrink-0 text-red-500" />
+            <p className="text-sm font-medium">{error}</p>
+          </div>
+        )}
+
+        {summaryError && (
+          <div className="mt-6 p-4 bg-red-50 border border-red-100 rounded-lg flex items-center gap-3 text-red-700 animate-fade-in shadow-sm">
+            <AlertCircle className="w-5 h-5 shrink-0 text-red-500" />
+            <p className="text-sm font-medium">{summaryError}</p>
           </div>
         )}
 
@@ -1227,6 +1343,7 @@ export default function App() {
          modelName={modelName}
          initialTone={polishingTone}
          onReplace={handleReplaceSelection}
+         userGeminiApiKey={userApiKeys?.gemini}
       />
       
       <PDFProcessModal isOpen={showPDFModal} onClose={() => { setShowPDFModal(false); setPendingPDF(null); }} fileName={pendingPDF?.file.name || ''} totalPages={pdfPageCount} pdfDocument={pendingPDF?.doc} onConfirm={handlePDFProcessConfirm} />
@@ -1235,8 +1352,8 @@ export default function App() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 animate-fade-in backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full m-4 overflow-hidden animate-fade-in-up border border-slate-200">
             <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-              <h3 className="font-semibold text-lg text-slate-800 flex items-center gap-2"><ShieldCheck className="w-5 h-5 text-brand-600" />白名单管理</h3>
-              <button onClick={() => setShowWhitelistModal(false)} className="text-slate-400 hover:text-slate-600 hover:bg-slate-100 p-1 rounded-full transition-all"><X className="w-5 h-5" /></button>
+              <h3 className="font-semibold text-lg text-slate-800 flex items-center gap-2"><ShieldCheck className="w-5 h-5 text-[#0D9488]" />白名单管理</h3>
+              <button onClick={() => setShowWhitelistModal(false)} className="text-slate-400 hover:text-slate-600 hover:bg-slate-100 p-1 rounded-full transition-all duration-200 cursor-pointer"><X className="w-5 h-5" /></button>
             </div>
             <div className="p-6">
               {whitelist.length === 0 ? (
@@ -1252,7 +1369,7 @@ export default function App() {
                     {whitelist.map((word, index) => (
                         <div key={index} className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 text-slate-700 rounded-lg text-sm border border-slate-200 group hover:border-red-200 hover:bg-red-50 transition-all duration-200">
                         <span className="font-medium">{word}</span>
-                        <button onClick={() => handleRemoveFromWhitelist(word)} className="text-slate-300 group-hover:text-red-500 transition-colors ml-1 p-0.5 rounded-full hover:bg-red-100" title="移除"><X className="w-3 h-3" /></button>
+                        <button onClick={() => handleRemoveFromWhitelist(word)} className="text-slate-300 group-hover:text-red-500 transition-colors ml-1 p-0.5 rounded-full hover:bg-red-100 cursor-pointer" title="移除"><X className="w-3 h-3" /></button>
                         </div>
                     ))}
                     </div>
@@ -1263,9 +1380,9 @@ export default function App() {
               <div>{whitelist.length > 0 && (<span className="text-xs text-slate-400">共 {whitelist.length} 个词汇</span>)}</div>
               <div className="flex gap-3">
                 {whitelist.length > 0 && (
-                    <button onClick={clearWhitelist} className="flex items-center gap-1.5 px-4 py-2 text-red-600 hover:bg-red-50 hover:text-red-700 rounded-lg text-sm font-medium transition-colors border border-transparent hover:border-red-100"><Trash2 className="w-4 h-4" />清空所有</button>
+                    <button onClick={clearWhitelist} className="flex items-center gap-1.5 px-4 py-2 text-red-600 hover:bg-red-50 hover:text-red-700 rounded-lg text-sm font-medium transition-all duration-200 border border-transparent hover:border-red-100 cursor-pointer"><Trash2 className="w-4 h-4" />清空所有</button>
                 )}
-                <button onClick={() => setShowWhitelistModal(false)} className="px-5 py-2 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 text-slate-700 rounded-lg text-sm font-medium transition-all shadow-sm">完成</button>
+                <button onClick={() => setShowWhitelistModal(false)} className="px-5 py-2 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 text-slate-700 rounded-lg text-sm font-medium transition-all duration-200 shadow-sm cursor-pointer">完成</button>
               </div>
             </div>
           </div>
@@ -1278,39 +1395,148 @@ export default function App() {
       
       {/* Auth & Profile Modals */}
       <AuthModal isOpen={showAuthModal} onClose={() => setShowAuthModal(false)} onSuccess={() => setShowAuthModal(false)} />
-      <UserProfileModal isOpen={showProfileModal} onClose={() => setShowProfileModal(false)} user={user} onLogout={handleLogout} />
+      <UserProfileModal isOpen={showProfileModal} onClose={() => setShowProfileModal(false)} user={user} onLogout={handleLogout} onApiKeysSaved={user ? () => { loadUserApiKeys(user.id).then(setUserApiKeys); } : undefined} />
       {user && <HistoryModal isOpen={showHistoryModal} onClose={() => setShowHistoryModal(false)} userId={user.id} onLoadRecord={handleLoadHistoryRecord} />}
       
-      {/* Collaboration Modal */}
-      {showCollaborationModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowCollaborationModal(false)} />
-          <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-y-auto">
-            <div className="flex items-center justify-between p-4 border-b border-slate-200">
-              <h3 className="text-lg font-semibold text-slate-900">协作会话</h3>
+      {/* Summary Modal */}
+      {showSummaryModal && summary && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowSummaryModal(false)} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto animate-fade-in-up border border-slate-200">
+            <div className="flex items-center justify-between p-4 border-b border-slate-100">
+              <h3 className="text-lg font-semibold text-slate-900 flex items-center gap-2">
+                <FileText className="w-5 h-5 text-[#0D9488]" />
+                文件摘要
+              </h3>
               <button 
-                onClick={() => setShowCollaborationModal(false)}
-                className="text-slate-400 hover:text-slate-600 transition-colors"
+                onClick={() => setShowSummaryModal(false)}
+                className="text-slate-400 hover:text-slate-600 transition-all duration-200 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="p-4">
+            <div className="p-6 space-y-6">
+              {/* Summary Statistics */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="bg-slate-50 p-3 rounded-lg">
+                  <p className="text-xs text-slate-500">原文字数</p>
+                  <p className="font-semibold text-slate-900">{summary.wordCount}</p>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg">
+                  <p className="text-xs text-slate-500">处理时间</p>
+                  <p className="font-semibold text-slate-900">{summary.processingTime}ms</p>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg">
+                  <p className="text-xs text-slate-500">关键要点</p>
+                  <p className="font-semibold text-slate-900">{summary.keyPoints.length}</p>
+                </div>
+                <div className="bg-slate-50 p-3 rounded-lg">
+                  <p className="text-xs text-slate-500">主要主题</p>
+                  <p className="font-semibold text-slate-900">{summary.mainTopics.length}</p>
+                </div>
+              </div>
+              
+              {/* Summary Text */}
+              <div>
+                <h4 className="text-sm font-medium text-slate-700 mb-3 flex items-center gap-2">
+                  <BookOpenCheck className="w-4 h-4 text-[#0D9488]" />
+                  详细摘要
+                </h4>
+                <div className="bg-slate-50 p-4 rounded-lg border border-slate-100 leading-relaxed">
+                  {typeof summary.summary === 'string' ? summary.summary : String(summary.summary ?? '')}
+                </div>
+              </div>
+              
+              {/* Key Points */}
+              <div>
+                <h4 className="text-sm font-medium text-slate-700 mb-3 flex items-center gap-2">
+                  <CheckCheck className="w-4 h-4 text-[#0D9488]" />
+                  关键要点
+                </h4>
+                <ul className="space-y-2">
+                  {summary.keyPoints.map((point, index) => (
+                    <li key={index} className="flex items-start gap-2">
+                      <span className="flex-shrink-0 w-5 h-5 bg-teal-50 text-[#0D9488] rounded-full flex items-center justify-center text-xs font-bold mt-0.5 border border-teal-100">
+                        {index + 1}
+                      </span>
+                      <span className="text-slate-700">{typeof point === 'string' ? point : String(point ?? '')}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              
+              {/* Main Topics */}
+              <div>
+                <h4 className="text-sm font-medium text-slate-700 mb-3 flex items-center gap-2">
+                  <Layers className="w-4 h-4 text-[#0D9488]" />
+                  主要主题
+                </h4>
+                <div className="flex flex-wrap gap-2">
+                  {summary.mainTopics.map((topic, index) => (
+                    <span key={index} className="px-3 py-1.5 bg-teal-50 text-[#0D9488] rounded-full text-sm border border-teal-100">
+                      {typeof topic === 'string' ? topic : String(topic ?? '')}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              
+              {/* Conclusion */}
+              {summary.conclusion && (
+                <div>
+                  <h4 className="text-sm font-medium text-slate-700 mb-3 flex items-center gap-2">
+                    <Lightbulb className="w-4 h-4 text-[#0D9488]" />
+                    结论与建议
+                  </h4>
+                  <div className="bg-amber-50 p-4 rounded-lg border border-amber-100 leading-relaxed">
+                    {typeof summary.conclusion === 'string' ? summary.conclusion : String(summary.conclusion ?? '')}
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex justify-end">
+              <button 
+                onClick={() => setShowSummaryModal(false)}
+                className="px-5 py-2 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 text-slate-700 rounded-lg text-sm font-medium transition-all duration-200 shadow-sm cursor-pointer"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Collaboration Modal */}
+      {showCollaborationModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setShowCollaborationModal(false)} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] overflow-y-auto animate-fade-in-up border border-slate-200">
+            <div className="flex items-center justify-between p-4 border-b border-slate-100">
+              <h3 className="text-lg font-semibold text-slate-900">协作会话</h3>
+              <button 
+                onClick={() => setShowCollaborationModal(false)}
+                className="text-slate-400 hover:text-slate-600 transition-all duration-200 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6">
               {/* Create New Session */}
               <div className="mb-6">
                 <h4 className="text-sm font-medium text-slate-700 mb-3">创建新会话</h4>
-                <div className="flex gap-2">
+                <div className="flex gap-3">
+                  <label htmlFor="newSessionName" className="sr-only">会话名称</label>
                   <input
+                    id="newSessionName"
                     type="text"
                     value={newSessionName}
                     onChange={(e) => setNewSessionName(e.target.value)}
                     placeholder="会话名称"
-                    className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-brand-500 focus:border-brand-500"
+                    className="flex-1 px-4 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-[#0D9488] focus:border-[#0D9488]"
                   />
                   <button
                     onClick={handleCreateCollaborationSession}
                     disabled={!newSessionName.trim()}
-                    className="px-4 py-2 bg-brand-600 text-white rounded-lg text-sm font-medium hover:bg-brand-700 transition-colors disabled:bg-slate-300 disabled:cursor-not-allowed"
+                    className="px-4 py-2 bg-[#0D9488] text-white rounded-lg text-sm font-medium hover:bg-[#0F766E] transition-all duration-200 disabled:bg-slate-300 disabled:cursor-not-allowed cursor-pointer"
                   >
                     创建
                   </button>
@@ -1327,9 +1553,9 @@ export default function App() {
                     <p className="text-xs mt-1">创建一个新会话开始协作</p>
                   </div>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="space-y-3">
                     {collaborationSessions.map(session => (
-                      <div key={session.id} className="flex items-center justify-between p-3 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors">
+                      <div key={session.id} className="flex items-center justify-between p-4 border border-slate-200 rounded-lg hover:bg-slate-50 transition-all duration-200">
                         <div>
                           <h5 className="text-sm font-medium text-slate-900">{session.name}</h5>
                           <p className="text-xs text-slate-500">{session.participants.length} 参与者 • {new Date(session.createdAt).toLocaleString()}</p>
@@ -1339,7 +1565,7 @@ export default function App() {
                             setInputText(session.document.currentText);
                             setShowCollaborationModal(false);
                           }}
-                          className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded-lg text-xs font-medium hover:bg-slate-200 transition-colors"
+                          className="px-4 py-2 bg-slate-100 text-slate-700 rounded-lg text-xs font-medium hover:bg-slate-200 transition-all duration-200 cursor-pointer"
                         >
                           打开
                         </button>

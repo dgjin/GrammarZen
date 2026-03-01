@@ -23,11 +23,26 @@ interface RenderPart {
   clickable?: boolean; // Can trigger selection
 }
 
+// Helper function to mask sensitive content
+const maskSensitiveContent = (content: string): string => {
+  if (!content) return content;
+  // For content longer than 2 characters, show first and last character, mask the rest
+  if (content.length > 2) {
+    return content[0] + '*'.repeat(content.length - 2) + content[content.length - 1];
+  }
+  // For content 2 characters or less, mask all
+  return '*'.repeat(content.length);
+};
+
 // Hover Card Component
 const HoverCard: React.FC<{
   issue: Issue;
   position: { x: number, y: number };
 }> = ({ issue, position }) => {
+  const isSensitive = issue.type === IssueType.SENSITIVE || issue.type === IssueType.PRIVACY;
+  const originalContent = isSensitive ? maskSensitiveContent(String(issue.original ?? '')) : String(issue.original ?? '');
+  const suggestionContent = isSensitive ? maskSensitiveContent(String(issue.suggestion ?? '')) : String(issue.suggestion ?? '');
+  
   return (
     <div 
       className="absolute z-50 bg-white p-4 rounded-xl shadow-2xl border border-slate-100 w-72 animate-fade-in-up pointer-events-none"
@@ -39,22 +54,22 @@ const HoverCard: React.FC<{
                issue.type === IssueType.TYPO ? 'bg-red-50 text-red-600 border-red-100' :
                'bg-slate-50 text-slate-600 border-slate-100'
            }`}>
-               {issue.type}
+               {String(issue.type)}
            </span>
         </div>
         
         <div className="grid grid-cols-[1fr_auto_1fr] gap-2 items-center text-sm mb-3">
             <div className="bg-red-50 text-red-600 px-2 py-1 rounded text-center line-through decoration-red-300">
-                {issue.original || <span className="opacity-50 italic">无</span>}
+                {typeof originalContent === 'string' && originalContent ? originalContent : <span className="opacity-50 italic">无</span>}
             </div>
             <span className="text-slate-300">→</span>
             <div className="bg-green-50 text-green-600 px-2 py-1 rounded text-center font-medium">
-                {issue.suggestion || <span className="opacity-50 italic">删除</span>}
+                {typeof suggestionContent === 'string' && suggestionContent ? suggestionContent : <span className="opacity-50 italic">删除</span>}
             </div>
         </div>
 
         <div className="text-xs text-slate-500 leading-relaxed bg-slate-50 p-2 rounded border border-slate-100">
-            {issue.reason}
+            {typeof issue.reason === 'string' ? issue.reason : String(issue.reason ?? '')}
         </div>
         
         {/* Arrow */}
@@ -394,9 +409,16 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
         report += "未发现明显问题或所有问题已处理。\n";
     } else {
         activeIssues.forEach((issue, index) => {
-            report += `### ${index + 1}. ${issue.original} -> ${issue.suggestion}\n`;
-            report += `- **类型**: ${typeLabels[issue.type] || issue.type}\n`;
-            report += `- **原因**: ${issue.reason}\n\n`;
+            const isSensitive = issue.type === IssueType.SENSITIVE || issue.type === IssueType.PRIVACY;
+            const orig = typeof issue.original === 'string' ? issue.original : String(issue.original ?? '');
+            const sugg = typeof issue.suggestion === 'string' ? issue.suggestion : String(issue.suggestion ?? '');
+            const reason = typeof issue.reason === 'string' ? issue.reason : String(issue.reason ?? '');
+            const originalContent = isSensitive ? maskSensitiveContent(orig) : orig;
+            const suggestionContent = isSensitive ? maskSensitiveContent(sugg) : sugg;
+            
+            report += `### ${index + 1}. ${originalContent} -> ${suggestionContent}\n`;
+            report += `- **类型**: ${typeLabels[issue.type] || String(issue.type ?? '')}\n`;
+            report += `- **原因**: ${reason}\n\n`;
         });
     }
     return report;
@@ -733,7 +755,7 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
               }}
               onMouseLeave={() => setHoveredIssue(null)}
             >
-              {part.value}
+              {typeof part.value === 'string' ? part.value : String(part.value ?? '')}
             </span>
           );
       });
@@ -1034,7 +1056,7 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
           </div>
           <p className="text-sm text-slate-600 leading-relaxed line-clamp-2 lg:line-clamp-none">
             <span className="font-medium text-slate-900 mr-2">总结:</span>
-            {result.summary}
+            {typeof result.summary === 'string' ? result.summary : String(result.summary ?? '')}
           </p>
           
           {/* Detailed Statistics */}
@@ -1086,7 +1108,7 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
                   return (
                     <div key={item.type} className="flex items-center gap-2">
                       <div className="w-2 h-2 rounded-full bg-slate-300"></div>
-                      <span className="text-xs text-slate-600 flex-1">{typeLabels[item.type] || item.type}</span>
+                      <span className="text-xs text-slate-600 flex-1">{typeLabels[item.type] || String(item.type)}</span>
                       <span className="text-xs font-medium text-slate-700">{item.count} ({item.percentage}%)</span>
                     </div>
                   );
@@ -1162,7 +1184,7 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
            <div 
              ref={listContainerRef}
              onScroll={handleListScroll}
-             className="flex-1 overflow-y-auto p-4 space-y-3 scroll-smooth bg-slate-50"
+             className="flex-1 overflow-y-auto p-4 space-y-2 scroll-smooth bg-slate-50"
            >
              {filteredIssues.length === 0 ? (
                <div className="flex flex-col items-center justify-center h-full text-slate-400 py-10">
@@ -1170,22 +1192,63 @@ export const ResultView: React.FC<ResultViewProps> = ({ result, originalText, on
                  <p>{counts.all === 0 ? "太棒了！没有发现明显错误。" : "该分类下没有发现问题。"}</p>
                </div>
              ) : (
-               filteredIssues.map((issue) => (
-                 <div key={issue.originalIndex} className="animate-slide-in-right opacity-0" style={{ animationDelay: '0.05s' }}>
-                   <IssueCard 
-                      id={`issue-card-${issue.originalIndex}`}
-                      issue={issue}
-                      isSelected={selectedIssueIndex === issue.originalIndex}
-                      onClick={() => {
-                          setSelectionSource('list');
-                          setSelectedIssueIndex(prev => prev === issue.originalIndex ? null : issue.originalIndex);
-                      }}
-                      onAccept={(e) => { e.stopPropagation(); handleAction(issue.originalIndex, 'accept', issue.original, issue.suggestion); }}
-                      onIgnore={(e) => { e.stopPropagation(); handleAction(issue.originalIndex, 'ignore', issue.original, issue.suggestion); }}
-                      onWhitelist={(e) => { e.stopPropagation(); handleAction(issue.originalIndex, 'whitelist', issue.original, issue.suggestion); }}
-                   />
-                 </div>
-               ))
+               filteredIssues.map((issue, index) => {
+                 const isSensitive = issue.type === IssueType.SENSITIVE || issue.type === IssueType.PRIVACY;
+                 const orig = typeof issue.original === 'string' ? issue.original : String(issue.original ?? '');
+                 const sugg = typeof issue.suggestion === 'string' ? issue.suggestion : String(issue.suggestion ?? '');
+                 const originalContent = isSensitive ? maskSensitiveContent(orig) : orig;
+                 const suggestionContent = isSensitive ? maskSensitiveContent(sugg) : sugg;
+                 
+                 return (
+                   <div 
+                     key={issue.originalIndex} 
+                     id={`issue-card-${issue.originalIndex}`}
+                     className={`animate-slide-in-right opacity-0 p-3 bg-white rounded-lg border border-slate-200 hover:shadow-sm transition-shadow ${selectedIssueIndex === issue.originalIndex ? 'border-brand-500 shadow-sm' : ''}`}
+                     style={{ animationDelay: '0.05s' }}
+                   >
+                     <div className="flex items-center gap-2 mb-2">
+                       <span className="text-xs font-bold text-slate-500 min-w-[24px]">{String(index + 1).padStart(2, '0')}</span>
+                       <div className="flex-1">
+                         {issue.suggestion ? (
+                           <div className="flex items-center gap-2">
+                             <span className="text-red-600">{originalContent}</span>
+                             <span className="text-slate-300">→</span>
+                             <span className="text-slate-900 font-medium">{suggestionContent}</span>
+                           </div>
+                         ) : (
+                           <div>
+                             <span className="text-red-600">{originalContent}</span>
+                             <span className="text-slate-500 text-sm ml-2">(删除)</span>
+                           </div>
+                         )}
+                       </div>
+                     </div>
+                     <div className="flex items-center gap-2 justify-end">
+                       <button 
+                         onClick={(e) => { e.stopPropagation(); handleAction(issue.originalIndex, 'accept', issue.original, issue.suggestion); }}
+                         className="text-xs px-2 py-1 bg-green-50 text-green-700 rounded hover:bg-green-100 transition-colors"
+                         title="采纳此修改"
+                       >
+                         采纳
+                       </button>
+                       <button 
+                         onClick={(e) => { e.stopPropagation(); handleAction(issue.originalIndex, 'ignore', issue.original, issue.suggestion); }}
+                         className="text-xs px-2 py-1 bg-slate-50 text-slate-700 rounded hover:bg-slate-100 transition-colors"
+                         title="忽略此问题"
+                       >
+                         忽略
+                       </button>
+                       <button 
+                         onClick={(e) => { e.stopPropagation(); handleAction(issue.originalIndex, 'whitelist', issue.original, issue.suggestion); }}
+                         className="text-xs px-2 py-1 bg-blue-50 text-blue-700 rounded hover:bg-blue-100 transition-colors"
+                         title="忽略并加入白名单"
+                       >
+                         白名单
+                       </button>
+                     </div>
+                   </div>
+                 );
+               })
              )}
            </div>
         </div>

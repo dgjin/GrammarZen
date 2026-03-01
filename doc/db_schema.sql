@@ -7,6 +7,7 @@ create table public.grammarzen_user_configs (
   user_id uuid not null references auth.users on delete cascade,
   whitelist jsonb default '[]'::jsonb,
   sensitive_words jsonb default '[]'::jsonb,
+  encrypted_api_keys jsonb default '{}'::jsonb,
   updated_at timestamp with time zone default timezone('utc'::text, now()),
   primary key (user_id)
 );

@@ -1,9 +1,10 @@
 import { createClient } from '@supabase/supabase-js';
 import { RuleLibrary, HistoryRecord } from '../types';
+import { encrypt, decrypt } from '../utils/cryptoUtil';
 
 // Process.env is replaced by Vite at build time. 
-const supabaseUrl = process.env.SUPABASE_URL || '';
-const supabaseKey = process.env.SUPABASE_ANON_KEY || '';
+const supabaseUrl = process.env.VITE_SUPABASE_URL || '';
+const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || '';
 
 // Safely initialize Supabase only if keys are present
 export const supabase = (supabaseUrl && supabaseKey) 
@@ -19,6 +20,15 @@ const LOCAL_RULE_LIBS_KEY = 'grammarzen_rule_libs';
 interface UserConfig {
   whitelist: string[];
   sensitive_words: string[];
+}
+
+/** 用户配置的大模型 API Key（明文，仅内存使用） */
+export interface UserApiKeys {
+  gemini?: string;
+  deepseek?: string;
+  spark?: string;
+  kimi?: string;
+  minmax?: string;
 }
 
 // --- Data Synchronization Helpers ---
@@ -233,6 +243,84 @@ export const saveSensitiveWords = async (userId: string | undefined, list: strin
       
      if(error) console.error("Cloud save sensitive words error", error);
   }
+};
+
+/**
+ * 加载用户保存的大模型 API Key（解密后返回，仅包含已配置的 key）
+ */
+export const loadUserApiKeys = async (userId: string | undefined): Promise<UserApiKeys> => {
+  if (!userId || !supabase) return {};
+  try {
+    const { data, error } = await supabase
+      .from('grammarzen_user_configs')
+      .select('encrypted_api_keys')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (error || !data?.encrypted_api_keys || typeof data.encrypted_api_keys !== 'object') return {};
+    const enc = data.encrypted_api_keys as Record<string, string>;
+    const out: UserApiKeys = {};
+    
+    const providers = ['gemini', 'deepseek', 'spark', 'kimi', 'minmax'];
+    for (const provider of providers) {
+      if (enc[provider]) {
+        try {
+          out[provider] = await decrypt(enc[provider]);
+        } catch (e) {
+          console.warn(`Failed to decrypt stored ${provider} API key`, e);
+        }
+      }
+    }
+    
+    return out;
+  } catch (e) {
+    console.error('loadUserApiKeys error', e);
+    return {};
+  }
+};
+
+/**
+ * 保存用户大模型 API Key（加密后写入数据库）
+ * 传入空字符串表示清除该 key，不传表示不修改
+ */
+export const saveUserApiKeys = async (userId: string, keys: { gemini?: string, deepseek?: string, spark?: string, kimi?: string, minmax?: string }): Promise<void> => {
+  if (!supabase) throw new Error("Supabase client not initialized");
+
+  const { data: row, error: fetchError } = await supabase
+    .from('grammarzen_user_configs')
+    .select('whitelist, sensitive_words, encrypted_api_keys')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (fetchError) throw fetchError;
+
+  const enc = (row?.encrypted_api_keys && typeof row.encrypted_api_keys === 'object'
+    ? { ...(row.encrypted_api_keys as Record<string, string>) }
+    : {}) as Record<string, string>;
+
+  const providers = ['gemini', 'deepseek', 'spark', 'kimi', 'minmax'];
+  for (const provider of providers) {
+    if (keys[provider as keyof typeof keys] !== undefined) {
+      if (keys[provider as keyof typeof keys]?.trim() === '') {
+        delete enc[provider];
+      } else if (keys[provider as keyof typeof keys]) {
+        enc[provider] = await encrypt(keys[provider as keyof typeof keys]!.trim());
+      }
+    }
+  }
+
+  const payload = {
+    user_id: userId,
+    whitelist: row?.whitelist ?? [],
+    sensitive_words: row?.sensitive_words ?? [],
+    encrypted_api_keys: enc
+  };
+
+  const { error: upsertError } = await supabase
+    .from('grammarzen_user_configs')
+    .upsert(payload, { onConflict: 'user_id' });
+
+  if (upsertError) throw upsertError;
 };
 
 /**

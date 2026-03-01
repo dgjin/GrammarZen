@@ -51,6 +51,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
               // 初始化失败不影响注册流程
             }
             alert("注册成功并已自动登录！");
+            onSuccess();
+            onClose();
           } 
           // 场景 2: Supabase 后台开启了 "Confirm email" (默认设置)
           else if (data.user && !data.session) {
@@ -72,8 +74,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
           }
         }
       }
-      onSuccess();
-      onClose();
+      // 登录成功后调用
+      if (isLogin) {
+        onSuccess();
+        onClose();
+      }
     } catch (err: any) {
       console.error("Auth Error:", err);
       setError(`操作失败: ${err.message || '未知错误'}\n\n详细信息: ${JSON.stringify(err)}`);
