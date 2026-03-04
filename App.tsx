@@ -803,7 +803,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="bg-[#0D9488] p-2 rounded-lg shadow-md transition-all hover:shadow-lg">
-              <BookOpenCheck className="w-6 h-6 text-white" />
+              <FileText className="w-6 h-6 text-white" />
             </div>
             <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-[#0D9488] to-[#14B8A6]">
               GrammarZen
