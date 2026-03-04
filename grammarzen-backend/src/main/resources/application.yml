@@ -1,0 +1,32 @@
+server:
+  port: 8080
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/grammarzen
+    username: postgres
+    password: password
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+  security:
+    jwt:
+      secret: your-secret-key
+      expiration: 86400000
+
+supabase:
+  url: https://your-project-id.supabase.co
+  key: your-supabase-api-key
+
+google:
+  gemini:
+    api-key: your-gemini-api-key
+
+cors:
+  allowed-origins: "*"

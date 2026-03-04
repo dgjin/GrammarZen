@@ -254,7 +254,7 @@ export default function App() {
   useEffect(() => {
     const updateRecommendations = async () => {
       if (inputText.length > 0) {
-        const recs = getRecommendations(inputText, historyRecords);
+        const recs = await getRecommendations(inputText, historyRecords);
         setRecommendations(recs);
       } else {
         setRecommendations([]);
@@ -299,31 +299,49 @@ export default function App() {
   const handleCreateCollaborationSession = async () => {
     if (!user || !newSessionName.trim()) return;
     
-    const session = createCollaborationSession(newSessionName, user.id, inputText);
-    setCollaborationSessions(prev => [...prev, session]);
-    setNewSessionName('');
-    setShowCollaborationModal(false);
+    try {
+      const session = await createCollaborationSession(newSessionName, user.id, inputText);
+      setCollaborationSessions(prev => [...prev, session]);
+      setNewSessionName('');
+      setShowCollaborationModal(false);
+    } catch (error) {
+      console.error('Failed to create collaboration session:', error);
+      alert('创建协作会话失败，请稍后重试');
+    }
   };
 
   const loadCollaborationSessions = async () => {
     if (!user) return;
-    const sessions = getCollaborationSessions(user.id);
-    setCollaborationSessions(sessions);
+    
+    try {
+      const sessions = await getCollaborationSessions(user.id);
+      setCollaborationSessions(sessions);
+    } catch (error) {
+      console.error('Failed to load collaboration sessions:', error);
+    }
   };
 
   const handleJoinCollaborationSession = async (sessionId: string) => {
     if (!user) return;
-    const session = addCollaborationParticipant(sessionId, user.id);
-    if (session) {
-      setCollaborationSessions(prev => prev.map(s => s.id === sessionId ? session : s));
+    try {
+      const session = await addCollaborationParticipant(sessionId, user.id);
+      if (session) {
+        setCollaborationSessions(prev => prev.map(s => s.id === sessionId ? session : s));
+      }
+    } catch (error) {
+      console.error('Failed to join collaboration session:', error);
     }
   };
 
   const handleUpdateCollaborationDocument = async (sessionId: string, newText: string, issues: any[]) => {
     if (!user) return;
-    const session = updateCollaborationDocument(sessionId, user.id, newText, issues);
-    if (session) {
-      setCollaborationSessions(prev => prev.map(s => s.id === sessionId ? session : s));
+    try {
+      const session = await updateCollaborationDocument(sessionId, user.id, newText, issues);
+      if (session) {
+        setCollaborationSessions(prev => prev.map(s => s.id === sessionId ? session : s));
+      }
+    } catch (error) {
+      console.error('Failed to update collaboration document:', error);
     }
   };
 
